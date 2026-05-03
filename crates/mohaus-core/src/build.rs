@@ -138,6 +138,27 @@ pub fn prepare_metadata_for_build_wheel(options: &MetadataOptions) -> Result<Str
         false,
         false,
     )?;
+    dist_info_name(&dist_info)
+}
+
+/// Prepare PEP 660 editable metadata without building extensions.
+///
+/// # Errors
+///
+/// Returns an error when configuration loading or dist-info writing fails.
+pub fn prepare_metadata_for_build_editable(options: &MetadataOptions) -> Result<String> {
+    let config = ProjectConfig::load(&options.project_dir)?;
+    let dist_info = write_dist_info(
+        &options.metadata_dir,
+        &config,
+        &options.python.pure_tag,
+        true,
+        true,
+    )?;
+    dist_info_name(&dist_info)
+}
+
+fn dist_info_name(dist_info: &Path) -> Result<String> {
     let Some(name) = dist_info.file_name().and_then(|value| value.to_str()) else {
         return Err(MohausError::WheelMetadata {
             message: format!(

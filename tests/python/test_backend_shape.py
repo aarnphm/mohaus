@@ -12,6 +12,7 @@ def test_backend_exports_pep_hooks() -> None:
     "build_editable",
     "get_requires_for_build_wheel",
     "get_requires_for_build_editable",
+    "prepare_metadata_for_build_editable",
     "prepare_metadata_for_build_wheel",
   ]:
     value = getattr(backend, name)

@@ -371,4 +371,10 @@ mod tests {
         let version = MojoVersion::parse("0.26.2.0").unwrap();
         assert_eq!(version.normalized(), "26.2.0");
     }
+
+    #[test]
+    fn mojo_version_preserves_nightly_prerelease_pin() {
+        let version = MojoVersion::parse("1.0.0b2.dev2026050306").unwrap();
+        assert_eq!(version.normalized(), "1.0.0b2.dev2026050306");
+    }
 }

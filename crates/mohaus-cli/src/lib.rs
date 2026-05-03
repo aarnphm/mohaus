@@ -2,11 +2,14 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -16,6 +19,15 @@ use mohaus_core::{
     build_sdist, build_wheel, ensure_editable_built,
 };
 use mohaus_scaffold::{ScaffoldOptions, scaffold_project};
+
+const SELF_FIND_LINKS_ENV: &str = "MOHAUS_SELF_FIND_LINKS";
+const SELF_WHEEL_ENV: &str = "MOHAUS_SELF_WHEEL";
+
+#[derive(Debug)]
+struct SelfWheelhouse {
+    path: PathBuf,
+    cleanup: bool,
+}
 
 /// Run the mohaus CLI from an argv iterator.
 ///
@@ -218,33 +230,108 @@ fn should_disable_isolation(project_dir: &PathBuf) -> Result<bool> {
 }
 
 fn run_editable_install(no_build_isolation: bool) -> Result<()> {
+    let self_wheelhouse = self_wheelhouse()?;
     if let Some(uv) = mohaus_core::toolchain::find_program_in_path("uv") {
-        let mut args = vec![
-            OsString::from("pip"),
-            OsString::from("install"),
-            OsString::from("-e"),
-            OsString::from("."),
-        ];
-        if no_build_isolation {
-            args.push(OsString::from("--no-build-isolation"));
-        }
+        let mut args = vec![OsString::from("pip")];
+        args.extend(editable_install_args(
+            no_build_isolation,
+            self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
+        ));
         return run_status(uv, args);
     }
 
     let python = mohaus_core::toolchain::find_program_in_path("python")
         .or_else(|| mohaus_core::toolchain::find_program_in_path("python3"))
         .ok_or_else(|| anyhow!("could not find uv, python, or python3 on PATH"))?;
+    let mut args = vec![OsString::from("-m"), OsString::from("pip")];
+    args.extend(editable_install_args(
+        no_build_isolation,
+        self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
+    ));
+    run_status(python, args)
+}
+
+fn editable_install_args(
+    no_build_isolation: bool,
+    self_find_links: Option<OsString>,
+) -> Vec<OsString> {
     let mut args = vec![
-        OsString::from("-m"),
-        OsString::from("pip"),
         OsString::from("install"),
         OsString::from("-e"),
         OsString::from("."),
     ];
+    if let Some(find_links) = self_find_links {
+        args.push(OsString::from("--find-links"));
+        args.push(find_links);
+    }
     if no_build_isolation {
         args.push(OsString::from("--no-build-isolation"));
     }
-    run_status(python, args)
+    args
+}
+
+fn self_wheelhouse() -> Result<Option<SelfWheelhouse>> {
+    if let Some(value) = env::var_os(SELF_WHEEL_ENV).filter(|value| !value.is_empty()) {
+        return Ok(Some(SelfWheelhouse::from_wheel(PathBuf::from(value))?));
+    }
+    let Some(value) = env::var_os(SELF_FIND_LINKS_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(SelfWheelhouse {
+        path: PathBuf::from(value),
+        cleanup: false,
+    }))
+}
+
+impl SelfWheelhouse {
+    fn from_wheel(wheel: PathBuf) -> Result<Self> {
+        if !wheel.is_file() {
+            return Err(anyhow!(
+                "{} points at a missing wheel: {}",
+                SELF_WHEEL_ENV,
+                wheel.display()
+            ));
+        }
+        let file_name = wheel
+            .file_name()
+            .ok_or_else(|| anyhow!("{} has no file name: {}", SELF_WHEEL_ENV, wheel.display()))?;
+        let path = env::temp_dir().join(format!(
+            "mohaus-self-wheelhouse-{}-{}",
+            std::process::id(),
+            monotonicish_nanos()
+        ));
+        fs::create_dir_all(&path)
+            .with_context(|| format!("could not create {}", path.display()))?;
+        fs::copy(&wheel, path.join(file_name)).with_context(|| {
+            format!(
+                "could not copy self wheel {} into {}",
+                wheel.display(),
+                path.display()
+            )
+        })?;
+        Ok(Self {
+            path,
+            cleanup: true,
+        })
+    }
+
+    fn arg(&self) -> OsString {
+        self.path.as_os_str().to_os_string()
+    }
+}
+
+impl Drop for SelfWheelhouse {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn monotonicish_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos())
 }
 
 fn run_status(program: PathBuf, args: Vec<OsString>) -> Result<()> {
@@ -282,6 +369,7 @@ fn _build_editable_for_tests(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
 
     use clap::{CommandFactory, Parser};
@@ -332,6 +420,56 @@ mod tests {
         let script = String::from_utf8(buffer)?;
         assert!(script.contains("init"));
         assert!(script.contains("develop"));
+        Ok(())
+    }
+
+    #[test]
+    fn editable_install_args_include_self_find_links() {
+        let args =
+            crate::editable_install_args(false, Some(OsString::from("/tmp/mohaus-wheelhouse")));
+
+        assert_eq!(
+            args,
+            [
+                "install",
+                "-e",
+                ".",
+                "--find-links",
+                "/tmp/mohaus-wheelhouse"
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn editable_install_args_keep_no_build_isolation_escape_hatch() {
+        let args = crate::editable_install_args(true, None);
+
+        assert_eq!(
+            args,
+            ["install", "-e", ".", "--no-build-isolation"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn self_wheelhouse_contains_only_the_exact_wheel() -> anyhow::Result<()> {
+        let root = TempDir::new()?;
+        let wheel_name = "mohaus-0.1.0-cp311-abi3-macosx_11_0_arm64.whl";
+        let wheel = root.path().join(wheel_name);
+        fs::write(&wheel, "")?;
+
+        let wheelhouse = crate::SelfWheelhouse::from_wheel(wheel.clone())?;
+        let entries = fs::read_dir(&wheelhouse.path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        assert_eq!(entries, vec![wheelhouse.path.join(wheel_name)]);
+        assert!(
+            !wheelhouse
+                .path
+                .join("mohaus-0.1.0-cp311-abi3-macosx_14_0_arm64.whl")
+                .exists()
+        );
         Ok(())
     }
 }

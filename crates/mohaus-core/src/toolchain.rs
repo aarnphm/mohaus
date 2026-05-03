@@ -107,13 +107,28 @@ fn probe_mojo_version(executable: &Path) -> Result<String> {
 ///
 /// Returns an error when the process cannot be spawned or exits unsuccessfully.
 pub fn run_command(program: &Path, args: &[OsString]) -> Result<()> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|source| MohausError::CommandIo {
-            program: program.display().to_string(),
-            source,
-        })?;
+    run_command_with_env_remove(program, args, &[])
+}
+
+/// Run a command with selected environment variables removed.
+///
+/// # Errors
+///
+/// Returns an error when the process cannot be spawned or exits unsuccessfully.
+pub fn run_command_with_env_remove(
+    program: &Path,
+    args: &[OsString],
+    env_remove: &[&str],
+) -> Result<()> {
+    let mut command = Command::new(program);
+    command.args(args);
+    for name in env_remove {
+        command.env_remove(name);
+    }
+    let output = command.output().map_err(|source| MohausError::CommandIo {
+        program: program.display().to_string(),
+        source,
+    })?;
     if output.status.success() {
         return Ok(());
     }
@@ -138,5 +153,9 @@ mod tests {
     fn normalizes_cli_version() {
         assert_eq!(normalize_mojo_version_token("Mojo 26.2.0 (abcd)"), "26.2.0");
         assert_eq!(normalize_mojo_version_token("0.26.2.0"), "26.2.0");
+        assert_eq!(
+            normalize_mojo_version_token("Mojo 1.0.0b2.dev2026050306 (dc0cf636)"),
+            "1.0.0b2.dev2026050306"
+        );
     }
 }

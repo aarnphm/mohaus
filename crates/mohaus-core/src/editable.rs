@@ -8,8 +8,24 @@ use walkdir::WalkDir;
 use crate::config::{MojoModule, ProjectConfig};
 use crate::error::{MohausError, Result};
 use crate::python_info::PythonInfo;
-use crate::toolchain::{resolve_verified_mojo, run_command};
+use crate::toolchain::{resolve_verified_mojo, run_command_with_env_remove};
 use crate::wheel::write_file;
+
+const DARWIN_MOJO_RUNTIME_LIBS: &[&str] = &[
+    "libKGENCompilerRTShared.dylib",
+    "libAsyncRTMojoBindings.dylib",
+    "libAsyncRTRuntimeGlobals.dylib",
+    "libMSupportGlobals.dylib",
+];
+const DARWIN_MOJO_COMPILER_RT: &str = "libKGENCompilerRTShared.dylib";
+const PYTHON_PACKAGE_MOJO_ENV_REMOVE: &[&str] =
+    &["MODULAR_PATH", "MODULAR_DERIVED_PATH", "MODULAR_HOME"];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MojoRuntimeLibs {
+    lib_dir: PathBuf,
+    libs: Vec<PathBuf>,
+}
 
 /// Ensure editable in-place extensions are built for a project.
 ///
@@ -52,6 +68,7 @@ pub fn compile_module(
             source,
         })?;
     }
+    let runtime = discover_mojo_runtime_libs(mojo_executable)?;
     let entry = config.project_dir.join(&module.entry);
     let mut args = vec![
         OsString::from("build"),
@@ -61,6 +78,9 @@ pub fn compile_module(
         OsString::from("-o"),
         output.as_os_str().to_os_string(),
     ];
+    if let Some(runtime) = &runtime {
+        add_mojo_runtime_link_args(&mut args, runtime);
+    }
     for include in &config.mojo_include_paths {
         args.push(OsString::from("-I"));
         args.push(config.project_dir.join(include).into_os_string());
@@ -68,7 +88,118 @@ pub fn compile_module(
     for flag in &config.mojo_flags {
         args.push(OsString::from(flag));
     }
-    run_command(mojo_executable, &args)
+    let env_remove = if runtime.is_some() {
+        PYTHON_PACKAGE_MOJO_ENV_REMOVE
+    } else {
+        &[]
+    };
+    run_command_with_env_remove(mojo_executable, &args, env_remove)?;
+    if let Some(runtime) = &runtime {
+        copy_mojo_runtime_libs(runtime, output)?;
+    }
+    Ok(())
+}
+
+fn add_mojo_runtime_link_args(args: &mut Vec<OsString>, runtime: &MojoRuntimeLibs) {
+    args.push(OsString::from("-Xlinker"));
+    args.push(
+        runtime
+            .lib_dir
+            .join(DARWIN_MOJO_COMPILER_RT)
+            .into_os_string(),
+    );
+    args.push(OsString::from("-Xlinker"));
+    args.push(OsString::from("-rpath"));
+    args.push(OsString::from("-Xlinker"));
+    args.push(OsString::from("@loader_path"));
+}
+
+fn copy_mojo_runtime_libs(runtime: &MojoRuntimeLibs, output: &Path) -> Result<()> {
+    let Some(output_dir) = output.parent() else {
+        return Err(MohausError::InvalidProject {
+            message: format!(
+                "extension output has no parent directory: {}",
+                output.display()
+            ),
+        });
+    };
+    for lib in &runtime.libs {
+        let Some(file_name) = lib.file_name() else {
+            return Err(MohausError::InvalidProject {
+                message: format!(
+                    "mojo runtime library path has no file name: {}",
+                    lib.display()
+                ),
+            });
+        };
+        let destination = output_dir.join(file_name);
+        fs::copy(lib, &destination).map_err(|source| MohausError::CopyFile {
+            source_path: lib.clone(),
+            dest_path: destination,
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn discover_mojo_runtime_libs(mojo_executable: &Path) -> Result<Option<MojoRuntimeLibs>> {
+    let Some(bin_dir) = mojo_executable.parent() else {
+        return Ok(None);
+    };
+    let Some(root) = bin_dir.parent() else {
+        return Ok(None);
+    };
+    let lib_root = root.join("lib");
+    if !lib_root.is_dir() {
+        return Ok(None);
+    }
+
+    for entry in WalkDir::new(&lib_root).max_depth(5) {
+        let entry = entry.map_err(|source| MohausError::WalkDir {
+            path: lib_root.clone(),
+            source,
+        })?;
+        if entry.file_type().is_dir()
+            && entry.path().ends_with("modular/lib")
+            && let Some(runtime) = runtime_libs_from_dir(entry.path())?
+        {
+            return Ok(Some(runtime));
+        }
+    }
+    Ok(None)
+}
+
+fn runtime_libs_from_dir(lib_dir: &Path) -> Result<Option<MojoRuntimeLibs>> {
+    let compiler_rt = lib_dir.join(DARWIN_MOJO_COMPILER_RT);
+    if !compiler_rt.is_file() {
+        return Ok(None);
+    }
+
+    let mut libs = Vec::new();
+    let mut missing = Vec::new();
+    for name in DARWIN_MOJO_RUNTIME_LIBS {
+        let path = lib_dir.join(name);
+        if path.is_file() {
+            libs.push(path);
+        } else {
+            missing.push(*name);
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(MohausError::InvalidProject {
+            message: format!(
+                "mojo runtime library directory {} is missing {}",
+                lib_dir.display(),
+                missing.join(", ")
+            ),
+        });
+    }
+
+    Ok(Some(MojoRuntimeLibs {
+        lib_dir: lib_dir.to_path_buf(),
+        libs,
+    }))
 }
 
 /// Return the in-place extension path for a module.
@@ -157,12 +288,17 @@ fn hash_file(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
     use crate::config::ProjectConfig;
-    use crate::editable::source_hash;
+    use crate::editable::{
+        DARWIN_MOJO_COMPILER_RT, DARWIN_MOJO_RUNTIME_LIBS, MojoRuntimeLibs,
+        add_mojo_runtime_link_args, discover_mojo_runtime_libs, source_hash,
+    };
 
     #[test]
     fn source_hash_changes_with_mojo_source() {
@@ -192,5 +328,53 @@ module-name = "demo._native"
         .unwrap();
         let after = source_hash(&config, &config.modules[0]).unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn discovers_python_package_mojo_runtime_libs() {
+        let temp = TempDir::new().unwrap();
+        let mojo = temp.path().join("bin").join("mojo");
+        fs::create_dir_all(mojo.parent().unwrap()).unwrap();
+        fs::write(&mojo, "").unwrap();
+        let lib_dir = temp
+            .path()
+            .join("lib")
+            .join("python3.11")
+            .join("site-packages")
+            .join("modular")
+            .join("lib");
+        fs::create_dir_all(&lib_dir).unwrap();
+        for name in DARWIN_MOJO_RUNTIME_LIBS {
+            fs::write(lib_dir.join(name), "").unwrap();
+        }
+
+        let runtime = discover_mojo_runtime_libs(&mojo).unwrap().unwrap();
+
+        assert_eq!(runtime.lib_dir, lib_dir);
+        assert_eq!(runtime.libs.len(), DARWIN_MOJO_RUNTIME_LIBS.len());
+    }
+
+    #[test]
+    fn runtime_link_args_link_compiler_rt_and_loader_rpath() {
+        let runtime = MojoRuntimeLibs {
+            lib_dir: PathBuf::from("/tmp/mojo/lib"),
+            libs: vec![PathBuf::from("/tmp/mojo/lib/libKGENCompilerRTShared.dylib")],
+        };
+        let mut args = Vec::new();
+
+        add_mojo_runtime_link_args(&mut args, &runtime);
+
+        assert_eq!(
+            args,
+            [
+                "-Xlinker",
+                &format!("/tmp/mojo/lib/{DARWIN_MOJO_COMPILER_RT}"),
+                "-Xlinker",
+                "-rpath",
+                "-Xlinker",
+                "@loader_path",
+            ]
+            .map(OsString::from)
+        );
     }
 }

@@ -24,3 +24,11 @@ target-version = "py311"
 [tool.ruff.lint]
 ignore = ["E111", "E114"]
 select = ["E", "F", "I", "UP", "B", "ANN"]
+
+[tool.uv.sources]
+mojo = { index = "modular-nightly" }
+
+[[tool.uv.index]]
+name = "modular-nightly"
+url = "https://whl.modular.com/nightly/simple/"
+explicit = true

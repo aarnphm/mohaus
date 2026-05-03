@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use mohaus_core::{
     BuildOptions, EditableOptions, MetadataOptions, PythonInfo, SdistOptions, build_editable_wheel,
     build_sdist as core_build_sdist, build_wheel as core_build_wheel, ensure_editable_built,
+    prepare_metadata_for_build_editable as core_prepare_editable_metadata,
     prepare_metadata_for_build_wheel as core_prepare_metadata,
 };
 use pyo3::exceptions::PyRuntimeError;
@@ -101,6 +102,24 @@ fn prepare_metadata_for_build_wheel(
 }
 
 #[pyfunction]
+#[pyo3(signature = (metadata_directory, config_settings=None))]
+fn prepare_metadata_for_build_editable(
+    py: Python<'_>,
+    metadata_directory: String,
+    config_settings: Option<Py<PyAny>>,
+) -> PyResult<String> {
+    let _ = config_settings;
+    let project_dir = current_dir_py()?;
+    let python = python_info(py)?;
+    core_prepare_editable_metadata(&MetadataOptions {
+        project_dir,
+        metadata_dir: PathBuf::from(metadata_directory),
+        python,
+    })
+    .map_err(to_py_error)
+}
+
+#[pyfunction]
 fn rebuild_editable(py: Python<'_>, project_root: String) -> PyResult<()> {
     let python = python_info(py)?;
     ensure_editable_built(project_root, &python).map_err(to_py_error)
@@ -126,6 +145,7 @@ fn mohaus_pep517(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_requires_for_build_wheel, m)?)?;
     m.add_function(wrap_pyfunction!(get_requires_for_build_editable, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_metadata_for_build_wheel, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_metadata_for_build_editable, m)?)?;
     m.add_function(wrap_pyfunction!(rebuild_editable, m)?)?;
     m.add_function(wrap_pyfunction!(cli, m)?)?;
     Ok(())
