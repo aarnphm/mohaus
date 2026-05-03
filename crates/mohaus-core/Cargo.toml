@@ -1,0 +1,22 @@
+[package]
+name = "mohaus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+flate2.workspace = true
+serde.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

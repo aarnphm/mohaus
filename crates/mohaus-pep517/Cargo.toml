@@ -1,0 +1,19 @@
+[package]
+name = "mohaus-pep517"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "mohaus_pep517"
+crate-type = ["cdylib"]
+
+[dependencies]
+mohaus-cli = { path = "../mohaus-cli" }
+mohaus-core = { path = "../mohaus-core" }
+pyo3.workspace = true
+
+[lints]
+workspace = true

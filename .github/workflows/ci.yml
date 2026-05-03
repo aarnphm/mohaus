@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          components: clippy,rustfmt
+      - name: format
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all --benches --tests --examples --all-features
+      - name: tests
+        run: cargo test --all-features
+
+  python-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+      - name: install package
+        run: uv pip install --system -e . pytest
+      - name: ruff
+        run: |
+          uvx ruff format --config "indent-width=2" --config "line-length=119" --config "preview=true" --check
+          uvx ruff check python tests
+      - name: backend shape
+        run: python -m pytest tests/python
+
+  mojo-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+      - name: install mojo
+        run: uv pip install --system mojo==0.26.2.0
+      - name: install mohaus
+        run: uv pip install --system -e .
+      - name: smoke
+        run: |
+          mohaus init demo
+          cd demo
+          uv pip install --system --no-build-isolation -e .
+          python -c "import demo; print(demo.passthrough('hello'))"

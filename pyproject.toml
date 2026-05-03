@@ -1,0 +1,38 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "mohaus"
+version = "0.1.0"
+description = "A maturin-shaped build backend for mixed Python and Mojo libraries."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "aarnphm" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.scripts]
+mohaus = "mohaus._cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=9"]
+
+[tool.maturin]
+manifest-path = "crates/mohaus-pep517/Cargo.toml"
+module-name = "mohaus.mohaus_pep517"
+python-source = "python"
+bindings = "pyo3"
+
+[tool.ruff]
+indent-width = 2
+line-length = 119
+preview = true
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["E111", "E114"]
+select = ["E", "F", "I", "UP", "B", "ANN"]

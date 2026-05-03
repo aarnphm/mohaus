@@ -1,0 +1,337 @@
+//! Command-line interface for mohaus.
+
+use std::env;
+use std::ffi::OsString;
+use std::io;
+use std::path::PathBuf;
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap_complete::{Shell, generate};
+use mohaus_core::{
+    BuildOptions, EditableOptions, ProjectConfig, PythonInfo, SdistOptions, build_editable_wheel,
+    build_sdist, build_wheel, ensure_editable_built,
+};
+use mohaus_scaffold::{ScaffoldOptions, scaffold_project};
+
+/// Run the mohaus CLI from an argv iterator.
+///
+/// # Errors
+///
+/// Returns an error when argument parsing or command execution fails.
+pub fn run_from<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.print().context("failed to print CLI help")?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    run(cli)
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "mohaus",
+    version,
+    about = "Build mixed Python and Mojo packages"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: CommandKind,
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandKind {
+    /// Scaffold a project in the current directory, in <name>/, or at [path].
+    Init {
+        /// Project name. If omitted, the current directory name is used.
+        name: Option<String>,
+
+        /// Destination directory. If omitted with a name, defaults to ./<name>.
+        path: Option<PathBuf>,
+    },
+
+    /// Scaffold a project in a new directory.
+    New {
+        /// Project name and destination directory.
+        name: String,
+    },
+
+    /// Generate shell completions.
+    #[command(visible_alias = "completion")]
+    Completions {
+        /// Shell to generate completions for.
+        shell: Shell,
+    },
+
+    /// Build a wheel for the active host.
+    Build {
+        /// Build with release intent. Currently forwarded to the build context.
+        #[arg(long)]
+        release: bool,
+
+        /// Output directory.
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+    },
+
+    /// Build and install an editable package.
+    Develop {
+        /// Force non-isolated install, useful for nightly/local Mojo.
+        #[arg(long)]
+        no_build_isolation: bool,
+    },
+
+    /// Build a source distribution.
+    Sdist {
+        /// Output directory.
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+    },
+
+    /// Keep editable Mojo extensions warm.
+    Watch {
+        /// Polling interval in milliseconds.
+        #[arg(long, default_value_t = 750)]
+        interval_ms: u64,
+    },
+}
+
+fn run(cli: Cli) -> Result<()> {
+    match cli.command {
+        CommandKind::Init { name, path } => init(name, path),
+        CommandKind::New { name } => new_project(name),
+        CommandKind::Completions { shell } => completions(shell),
+        CommandKind::Build { release, out } => build(release, out),
+        CommandKind::Develop { no_build_isolation } => develop(no_build_isolation),
+        CommandKind::Sdist { out } => sdist(out),
+        CommandKind::Watch { interval_ms } => watch(interval_ms),
+    }
+}
+
+fn init(name: Option<String>, path: Option<PathBuf>) -> Result<()> {
+    let cwd = env::current_dir().context("could not read current directory")?;
+    let (name, destination) = match (name, path) {
+        (Some(name), Some(destination)) => (name, destination),
+        (Some(name), None) => {
+            let destination = cwd.join(&name);
+            (name, destination)
+        }
+        (None, None) => {
+            let name = cwd
+                .file_name()
+                .ok_or_else(|| anyhow!("current directory has no project-like name"))?
+                .to_os_string()
+                .into_string()
+                .map_err(os_string_error)?;
+            (name, cwd)
+        }
+        (None, Some(destination)) => {
+            let name = destination
+                .file_name()
+                .ok_or_else(|| anyhow!("destination has no project-like name"))?
+                .to_os_string()
+                .into_string()
+                .map_err(os_string_error)?;
+            (name, destination)
+        }
+    };
+    scaffold_project(&ScaffoldOptions { name, destination })?;
+    Ok(())
+}
+
+fn new_project(name: String) -> Result<()> {
+    let cwd = env::current_dir().context("could not read current directory")?;
+    scaffold_project(&ScaffoldOptions {
+        destination: cwd.join(&name),
+        name,
+    })?;
+    Ok(())
+}
+
+fn completions(shell: Shell) -> Result<()> {
+    let mut command = Cli::command();
+    generate(shell, &mut command, "mohaus", &mut io::stdout());
+    Ok(())
+}
+
+fn build(release: bool, out: PathBuf) -> Result<()> {
+    let project_dir = env::current_dir().context("could not read current directory")?;
+    let python = PythonInfo::detect()?;
+    let wheel = build_wheel(&BuildOptions {
+        project_dir,
+        out_dir: out,
+        python,
+        release,
+    })?;
+    println!("{}", wheel.display());
+    Ok(())
+}
+
+fn develop(no_build_isolation: bool) -> Result<()> {
+    let project_dir = env::current_dir().context("could not read current directory")?;
+    let disable_isolation = no_build_isolation || should_disable_isolation(&project_dir)?;
+    run_editable_install(disable_isolation)
+}
+
+fn sdist(out: PathBuf) -> Result<()> {
+    let project_dir = env::current_dir().context("could not read current directory")?;
+    let archive = build_sdist(&SdistOptions {
+        project_dir,
+        out_dir: out,
+    })?;
+    println!("{}", archive.display());
+    Ok(())
+}
+
+fn watch(interval_ms: u64) -> Result<()> {
+    let project_dir = env::current_dir().context("could not read current directory")?;
+    let python = PythonInfo::detect()?;
+    let interval = Duration::from_millis(interval_ms);
+    loop {
+        ensure_editable_built(&project_dir, &python)?;
+        thread::sleep(interval);
+    }
+}
+
+fn should_disable_isolation(project_dir: &PathBuf) -> Result<bool> {
+    if env::var_os("MOHAUS_MOJO").is_some() {
+        return Ok(true);
+    }
+    let config = ProjectConfig::load(project_dir)?;
+    let version = config.mojo_version.as_str();
+    Ok(version.contains("dev") || version.contains("nightly"))
+}
+
+fn run_editable_install(no_build_isolation: bool) -> Result<()> {
+    if let Some(uv) = mohaus_core::toolchain::find_program_in_path("uv") {
+        let mut args = vec![
+            OsString::from("pip"),
+            OsString::from("install"),
+            OsString::from("-e"),
+            OsString::from("."),
+        ];
+        if no_build_isolation {
+            args.push(OsString::from("--no-build-isolation"));
+        }
+        return run_status(uv, args);
+    }
+
+    let python = mohaus_core::toolchain::find_program_in_path("python")
+        .or_else(|| mohaus_core::toolchain::find_program_in_path("python3"))
+        .ok_or_else(|| anyhow!("could not find uv, python, or python3 on PATH"))?;
+    let mut args = vec![
+        OsString::from("-m"),
+        OsString::from("pip"),
+        OsString::from("install"),
+        OsString::from("-e"),
+        OsString::from("."),
+    ];
+    if no_build_isolation {
+        args.push(OsString::from("--no-build-isolation"));
+    }
+    run_status(python, args)
+}
+
+fn run_status(program: PathBuf, args: Vec<OsString>) -> Result<()> {
+    let status = Command::new(&program)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to run {}", program.display()))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow!("{} exited with {status}", program.display()))
+}
+
+fn os_string_error(error: OsString) -> anyhow::Error {
+    let printable = os_string_lossy(error);
+    anyhow!("could not convert path component `{printable}` to UTF-8")
+}
+
+fn os_string_lossy(value: OsString) -> String {
+    value.to_string_lossy().to_string()
+}
+
+#[allow(dead_code)]
+fn _build_editable_for_tests(
+    project_dir: PathBuf,
+    out_dir: PathBuf,
+    python: PythonInfo,
+) -> Result<PathBuf> {
+    Ok(build_editable_wheel(&EditableOptions {
+        project_dir,
+        out_dir,
+        python,
+    })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use clap::{CommandFactory, Parser};
+    use clap_complete::{Shell, generate};
+    use tempfile::TempDir;
+
+    #[test]
+    fn version_exits_successfully() {
+        assert!(crate::run_from(["mohaus", "--version"]).is_ok());
+    }
+
+    #[test]
+    fn init_accepts_explicit_destination_path() -> anyhow::Result<()> {
+        let root = TempDir::new()?;
+        let destination = root.path().join("workspace").join("monpy");
+
+        crate::init(Some("monpy".to_string()), Some(destination.clone()))?;
+
+        assert!(destination.join("src").join("lib.mojo").is_file());
+        assert!(
+            destination
+                .join("python")
+                .join("monpy")
+                .join("py.typed")
+                .is_file()
+        );
+        let pyproject = fs::read_to_string(destination.join("pyproject.toml"))?;
+        assert!(pyproject.contains("name = \"monpy\""));
+        Ok(())
+    }
+
+    #[test]
+    fn completion_alias_parses() -> anyhow::Result<()> {
+        let cli = crate::Cli::try_parse_from(["mohaus", "completion", "zsh"])?;
+        assert!(matches!(
+            cli.command,
+            crate::CommandKind::Completions { shell: Shell::Zsh }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn completion_script_includes_mohaus_commands() -> anyhow::Result<()> {
+        let mut command = crate::Cli::command();
+        let mut buffer = Vec::new();
+        generate(Shell::Bash, &mut command, "mohaus", &mut buffer);
+
+        let script = String::from_utf8(buffer)?;
+        assert!(script.contains("init"));
+        assert!(script.contains("develop"));
+        Ok(())
+    }
+}
