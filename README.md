@@ -47,18 +47,13 @@ routes those primitives through the Mojo `.mojopkg` artifacts:
 uv pip install 'mohaus[mojo]' --index https://aarnphm.github.io/mohaus/simple/
 ```
 
-`MOHAUS_DISABLE_MOJO_PARITY=1` keeps the Rust backend on the hot path even
-when `mohaus-mojo` is installed (useful for differential debugging).
+`MOHAUS_DISABLE_MOJO_PARITY=1` keeps the Rust backend on the hot path even when `mohaus-mojo` is installed (useful for differential debugging).
 
-Wheels carry a PEP 440 local-version tag matching the source commit
-(`mohaus-0.1.0+gabcdef-cp311-abi3-...`) so `uv lock` resolves to the exact
-build.
+Wheels carry a PEP 440 local-version tag matching the source commit (`mohaus-0.1.0+gabcdef-cp311-abi3-...`) so `uv lock` resolves to the exact build.
 
 ## development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the complete workflow across all
-three toolchains (Rust + maturin, Python + uv workspaces, Mojo). The short
-version:
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the complete workflow across all three toolchains (Rust + maturin, Python + uv workspaces, Mojo). The short version:
 
 ```bash
 nix develop                                 # rust 1.93, maturin, uv, ruff, ratchet
@@ -66,9 +61,7 @@ nix run .#check                             # cargo fmt + clippy + test, ruff, r
 nix develop -c pre-commit run --all-files
 ```
 
-Mojo parity ports live under [`src/`](src/README.md) and ship as a sibling
-`mohaus-mojo` wheel. CI builds them via `mojo package` + `mohaus build`,
-dogfooding the backend.
+Mojo parity ports live under [`src/`](src/README.md) and ship as a sibling `mohaus-mojo` wheel. CI builds them via `mojo package` + `mohaus build`, dogfooding the backend.
 
 ## license
 
@@ -76,6 +69,4 @@ mohaus is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE)
 
 ## acknowledgements
 
-mohaus borrows the mixed-layout ergonomics from
-[PyO3/maturin](https://github.com/pyo3/maturin) and adapts that workflow for
-Mojo packages that expose Python bindings.
+mohaus borrows the mixed-layout ergonomics from [PyO3/maturin](https://github.com/pyo3/maturin), extends a lot of [astral-sh/uv](https://github.com/astral-sh/uv) and adapts that workflow for Mojo packages that expose Python bindings.
