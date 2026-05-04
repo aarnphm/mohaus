@@ -385,12 +385,15 @@ fn should_disable_isolation(config: &ProjectConfig) -> bool {
     if env::var_os("MOHAUS_MOJO").is_some() {
         return true;
     }
-    let version = config.mojo_version.as_str();
-    version.contains("dev") || version.contains("nightly")
+    let Some(version) = config.mojo_version.as_ref() else {
+        return false;
+    };
+    let value = version.as_str();
+    value.contains("dev") || value.contains("nightly")
 }
 
 fn editable_mojo_requirement(config: &ProjectConfig) -> Option<OsString> {
-    let version = config.mojo_version.as_str();
+    let version = config.mojo_version.as_ref()?.as_str();
     if version.contains("dev") || version.contains("nightly") {
         return None;
     }

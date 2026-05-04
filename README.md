@@ -28,26 +28,47 @@ uv pip install -e .
 python -c "import monpy; print(monpy.passthrough('hello'))"
 ```
 
-## development
+## install from CI
+
+Every push to `main` publishes platform wheels and an sdist to a PEP 503
+"simple" index hosted on GitHub Pages. Install the latest commit:
 
 ```bash
-nix develop
-nix run .#check
+uv pip install mohaus --index https://aarnphm.github.io/mohaus/simple/
+```
+
+The default install ships the Rust pyo3 backend. Add the `[mojo]` extra to
+pull in `mohaus-mojo`, the sibling package containing pure-Mojo parity ports
+of `mohaus`'s build primitives (toolchain, hashing, scaffold). When both
+packages are installed and a `mojo` toolchain is reachable, the dispatcher
+routes those primitives through the Mojo `.mojopkg` artifacts:
+
+```bash
+uv pip install 'mohaus[mojo]' --index https://aarnphm.github.io/mohaus/simple/
+```
+
+`MOHAUS_DISABLE_MOJO_PARITY=1` keeps the Rust backend on the hot path even
+when `mohaus-mojo` is installed (useful for differential debugging).
+
+Wheels carry a PEP 440 local-version tag matching the source commit
+(`mohaus-0.1.0+gabcdef-cp311-abi3-...`) so `uv lock` resolves to the exact
+build.
+
+## development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the complete workflow across all
+three toolchains (Rust + maturin, Python + uv workspaces, Mojo). The short
+version:
+
+```bash
+nix develop                                 # rust 1.93, maturin, uv, ruff, ratchet
+nix run .#check                             # cargo fmt + clippy + test, ruff, ratchet lint
 nix develop -c pre-commit run --all-files
 ```
 
-The flake provides Rust 1.93.0, maturin, uv, Python 3.11, ruff, alejandra,
-deadnix, and statix. Individual checks are exposed as `.#fmt`, `.#clippy`,
-`.#test`, and `.#ruff`. Entering the dev shell creates `.venv`, installs
-`mohaus` editable with dev extras through nix-provided maturin, and installs the
-pre-commit hooks generated from the flake.
-
-We also have a few Mojo first parity ported under [src](src/README.md). The goal is
-to have this in native Mojo in future.
-
-The dev shell also generates shell completions under `.venv/share`, exports the
-zsh, fish, and bash lookup paths, and sources bash completion when the shell
-hook is running under bash.
+Mojo parity ports live under [`src/`](src/README.md) and ship as a sibling
+`mohaus-mojo` wheel. CI builds them via `mojo package` + `mohaus build`,
+dogfooding the backend.
 
 ## license
 

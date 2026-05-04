@@ -215,7 +215,7 @@ pub struct ProjectConfig {
     pub package: PackageName,
     pub version: String,
     pub requires_python: String,
-    pub mojo_version: MojoVersion,
+    pub mojo_version: Option<MojoVersion>,
     pub mojo_src: PathBuf,
     pub python_src: PathBuf,
     pub modules: Vec<MojoModule>,
@@ -223,6 +223,12 @@ pub struct ProjectConfig {
     pub mojo_flags: Vec<String>,
     pub mojo_include_paths: Vec<PathBuf>,
     pub metadata: ProjectMetadata,
+    /// When true, mohaus skips Mojo toolchain resolution and module
+    /// compilation. The wheel is assembled from Python source plus any data
+    /// files staged under `python-src`. Used for sibling packages like
+    /// `mohaus-mojo` that ship pre-compiled `.mojopkg`s without inventing
+    /// their own Mojo extensions.
+    pub pure: bool,
 }
 
 impl ProjectConfig {
@@ -256,23 +262,8 @@ impl ProjectConfig {
 
         let metadata = build_project_metadata(&project_dir, &raw.project)?;
 
-        let mojo_version_path = project_dir.join(".mojo-version");
-        let mojo_version_text =
-            fs::read_to_string(&mojo_version_path).map_err(|source| match source.kind() {
-                std::io::ErrorKind::NotFound => MohausError::InvalidProject {
-                    message: format!(
-                        ".mojo-version is required at {} but is missing; pin a Mojo toolchain with `echo <version> > .mojo-version`",
-                        mojo_version_path.display()
-                    ),
-                },
-                _ => MohausError::ReadFile {
-                    path: mojo_version_path.clone(),
-                    source,
-                },
-            })?;
-        let mojo_version = MojoVersion::parse(mojo_version_text.trim())?;
-
         let tool = raw.tool.and_then(|tool| tool.mohaus).unwrap_or_default();
+        let pure = tool.pure.unwrap_or(false);
         let mojo_src = tool.mojo_src.unwrap_or_else(|| PathBuf::from("src"));
         let python_src = tool.python_src.unwrap_or_else(|| PathBuf::from("python"));
         let strip = tool.strip.unwrap_or(true);
@@ -280,7 +271,34 @@ impl ProjectConfig {
         validate_mojo_flags(&mojo_flags)?;
         let mojo_include_paths = tool.mojo_include_paths.unwrap_or_default();
 
-        let modules = if let Some(raw_modules) = tool.modules {
+        let mojo_version_path = project_dir.join(".mojo-version");
+        let mojo_version = match fs::read_to_string(&mojo_version_path) {
+            Ok(text) => Some(MojoVersion::parse(text.trim())?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && pure => None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(MohausError::InvalidProject {
+                    message: format!(
+                        ".mojo-version is required at {} but is missing; pin a Mojo toolchain with `echo <version> > .mojo-version` or set `[tool.mohaus] pure = true`",
+                        mojo_version_path.display()
+                    ),
+                });
+            }
+            Err(source) => {
+                return Err(MohausError::ReadFile {
+                    path: mojo_version_path,
+                    source,
+                });
+            }
+        };
+
+        let modules = if pure {
+            if tool.modules.is_some() || tool.module_name.is_some() {
+                return Err(MohausError::InvalidProject {
+                    message: "[tool.mohaus] pure = true cannot coexist with `module-name` or `[[tool.mohaus.modules]]`".to_string(),
+                });
+            }
+            Vec::new()
+        } else if let Some(raw_modules) = tool.modules {
             raw_modules
                 .into_iter()
                 .map(|module| {
@@ -313,6 +331,7 @@ impl ProjectConfig {
             mojo_flags,
             mojo_include_paths,
             metadata,
+            pure,
         })
     }
 
@@ -575,6 +594,7 @@ struct RawMohaus {
     mojo_flags: Option<Vec<String>>,
     mojo_include_paths: Option<Vec<PathBuf>>,
     modules: Option<Vec<RawModule>>,
+    pure: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

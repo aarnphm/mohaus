@@ -60,41 +60,53 @@ pub struct MetadataOptions {
 /// metadata generation, or wheel writing fails.
 pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
     let config = ProjectConfig::load(&options.project_dir)?;
-    let mojo = resolve_verified_mojo(&config.mojo_version)?;
     let staged = TempDir::new().map_err(|source| MohausError::CreateDir {
         path: options.project_dir.join("target/mohaus-staged"),
         source,
     })?;
 
     stage_python_tree(&config, staged.path())?;
-    for module in &config.modules {
-        let output =
-            extension_output_path_in_root(staged.path(), module, &options.python.ext_suffix);
-        compile_module(&config, module, &output, &mojo.executable)?;
+    if !config.modules.is_empty() {
+        let mojo = resolve_module_toolchain(&config)?;
+        for module in &config.modules {
+            let output =
+                extension_output_path_in_root(staged.path(), module, &options.python.ext_suffix);
+            compile_module(&config, module, &output, &mojo)?;
+        }
     }
 
     let reused = match &options.metadata_dir {
         Some(metadata_dir) => copy_prepared_dist_info(metadata_dir, staged.path(), &config)?,
         None => false,
     };
+    let wheel_tag = if config.pure {
+        &options.python.pure_tag
+    } else {
+        &options.python.wheel_tag
+    };
+    let root_is_purelib = config.pure;
     if !reused {
-        write_dist_info(
-            staged.path(),
-            &config,
-            &options.python.wheel_tag,
-            false,
-            false,
-        )?;
+        write_dist_info(staged.path(), &config, wheel_tag, root_is_purelib, false)?;
     }
     let wheel_name = format!(
         "{}-{}-{}.whl",
         config.package.escaped(),
         config.version,
-        options.python.wheel_tag
+        wheel_tag
     );
     let wheel_path = options.out_dir.join(wheel_name);
     write_wheel_archive(staged.path(), &wheel_path, &config.dist_info_dir())?;
     Ok(wheel_path)
+}
+
+fn resolve_module_toolchain(config: &ProjectConfig) -> Result<PathBuf> {
+    let pinned = config
+        .mojo_version
+        .as_ref()
+        .ok_or_else(|| MohausError::InvalidProject {
+            message: ".mojo-version is required to compile Mojo modules".to_string(),
+        })?;
+    Ok(resolve_verified_mojo(pinned)?.executable)
 }
 
 /// Build a PEP 660 editable wheel.
@@ -105,7 +117,9 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
 /// metadata generation, or wheel writing fails.
 pub fn build_editable_wheel(options: &EditableOptions) -> Result<PathBuf> {
     let config = ProjectConfig::load(&options.project_dir)?;
-    ensure_editable_built(&options.project_dir, &options.python)?;
+    if !config.modules.is_empty() {
+        ensure_editable_built(&options.project_dir, &options.python)?;
+    }
     let staged = TempDir::new().map_err(|source| MohausError::CreateDir {
         path: options.project_dir.join("target/mohaus-editable-staged"),
         source,
@@ -201,7 +215,17 @@ fn stage_python_tree(config: &ProjectConfig, staged_root: &Path) -> Result<()> {
             ),
         });
     }
-    copy_dir(&source, staged_root)
+    let package_dir = source.join(config.package.import_name());
+    if package_dir.is_dir() {
+        let staged_package = staged_root.join(config.package.import_name());
+        std::fs::create_dir_all(&staged_package).map_err(|source| MohausError::CreateDir {
+            path: staged_package.clone(),
+            source,
+        })?;
+        copy_dir(&package_dir, &staged_package)
+    } else {
+        copy_dir(&source, staged_root)
+    }
 }
 
 fn extension_output_path_in_root(

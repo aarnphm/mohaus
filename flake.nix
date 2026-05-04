@@ -49,6 +49,7 @@
       pkgs.openssl
       pkgs.pkg-config
       pkgs.python311
+      pkgs.ratchet
       pkgs.statix
       pkgs.uv
     ];
@@ -247,6 +248,14 @@
               pass_filenames = false;
             };
 
+            ratchet = {
+              enable = true;
+              name = "ratchet lint";
+              entry = "${pkgs.ratchet}/bin/ratchet lint .github/workflows/ci.yml";
+              pass_filenames = false;
+              files = "\\.github/workflows/.*\\.ya?ml$";
+            };
+
             check-added-large-files.enable = true;
             check-merge-conflicts.enable = true;
             check-toml.enable = true;
@@ -275,7 +284,15 @@
 
         ruff = mkCommandApp pkgs "mohaus-ruff" ''
           uvx ruff format --config "indent-width=2" --config "line-length=119" --config "preview=true" --check
-          uvx ruff check python tests
+          uvx ruff check python tests scripts
+        '';
+
+        ratchet-lint = mkCommandApp pkgs "mohaus-ratchet-lint" ''
+          ratchet lint .github/workflows/ci.yml
+        '';
+
+        ratchet-update = mkCommandApp pkgs "mohaus-ratchet-update" ''
+          ratchet update .github/workflows/ci.yml
         '';
 
         check = mkCommandApp pkgs "mohaus-check" ''
@@ -283,10 +300,11 @@
           cargo clippy --all --benches --tests --examples --all-features
           cargo test --all-features
           uvx ruff format --config "indent-width=2" --config "line-length=119" --config "preview=true" --check
-          uvx ruff check python tests
+          uvx ruff check python tests scripts
           alejandra --check flake.nix
           deadnix --fail flake.nix
           statix check flake.nix
+          ratchet lint .github/workflows/ci.yml
         '';
       }
     );

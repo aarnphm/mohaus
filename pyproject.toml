@@ -28,6 +28,13 @@ mohaus = "mohaus._cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=9"]
+mojo = ["mohaus-mojo>=0.1,<0.2"]
+
+[tool.uv.workspace]
+members = ["python/mohaus_mojo"]
+
+[tool.uv.sources]
+mohaus-mojo = { workspace = true }
 
 [tool.maturin]
 manifest-path = "crates/mohaus-pep517/Cargo.toml"

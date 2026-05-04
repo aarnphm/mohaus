@@ -75,7 +75,13 @@ pub fn ensure_editable_built(project_dir: impl AsRef<Path>, python: &PythonInfo)
     if plan.is_empty() {
         return Ok(());
     }
-    let mojo = resolve_verified_mojo(&config.mojo_version)?;
+    let pinned = config
+        .mojo_version
+        .as_ref()
+        .ok_or_else(|| MohausError::InvalidProject {
+            message: ".mojo-version is required for editable builds with Mojo modules".to_string(),
+        })?;
+    let mojo = resolve_verified_mojo(pinned)?;
     for stale in plan {
         compile_module(
             &config,

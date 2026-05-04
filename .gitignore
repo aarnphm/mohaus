@@ -12,3 +12,8 @@ __pycache__/
 *.dll
 __mojocache__/
 .mohaus/
+
+# mohaus-mojo build artifacts (CI populates these from `mojo package` and the
+# canonical scaffold templates; never check the staged copies into git).
+/python/mohaus_mojo/_mojopkg/
+/python/mohaus_mojo/templates/

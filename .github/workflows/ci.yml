@@ -9,6 +9,21 @@ env:
   MOJO_INDEX_URL: https://whl.modular.com/nightly/simple/
 
 jobs:
+  ratchet:
+    # Fail the build if any GitHub Action reference is not pinned to a commit
+    # SHA. Run locally with `nix develop -c ratchet check .github/workflows/*.yml`
+    # and refresh pins via `nix develop -c ratchet update .github/workflows/*.yml`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: ratchet lint
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workdir" \
+            -w /workdir \
+            ghcr.io/sethvargo/ratchet:0.11.4 \
+            lint .github/workflows/ci.yml
+
   rust:
     strategy:
       fail-fast: false
@@ -16,8 +31,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # ratchet:dtolnay/rust-toolchain@master
         with:
           toolchain: 1.93.0
           components: clippy,rustfmt
@@ -35,21 +50,21 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # ratchet:dtolnay/rust-toolchain@master
         with:
           toolchain: 1.93.0
       - name: install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
       - name: install package
         run: uv pip install --system -e . pytest
       - name: ruff
         run: |
           uvx ruff format --config "indent-width=2" --config "line-length=119" --config "preview=true" --check
-          uvx ruff check python tests
+          uvx ruff check python tests scripts
       - name: backend shape
         run: python -m pytest tests/python
 
@@ -60,15 +75,15 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
         with:
           python-version: "3.11"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # ratchet:dtolnay/rust-toolchain@master
         with:
           toolchain: 1.93.0
       - name: install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
       - name: install mojo
         run: |
           uv pip install --system "mojo==${MOJO_VERSION}" \
@@ -91,12 +106,12 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
       - name: install mojo
         run: |
           uv pip install --system "mojo==${MOJO_VERSION}" \
@@ -105,6 +120,7 @@ jobs:
           mojo --version
       - name: package mohaus mojo modules
         run: |
+          mkdir -p target/mojopkg
           mojo package src/mohaus_toolchain -o target/mojopkg/mohaus_toolchain.mojopkg
           mojo package src/mohaus_hashing -o target/mojopkg/mohaus_hashing.mojopkg
           mojo package src/mohaus_scaffold -o target/mojopkg/mohaus_scaffold.mojopkg
@@ -118,3 +134,152 @@ jobs:
         run: |
           uv pip install --system -e .
           python tests/parity/run_source_hash_parity.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: mojopkg-${{ matrix.os }}
+          path: target/mojopkg/*.mojopkg
+          retention-days: 30
+          if-no-files-found: error
+
+  wheel-matrix:
+    needs: [rust, python-backend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, target: x86_64-unknown-linux-gnu, artifact: wheels-linux-x86_64}
+          - {os: ubuntu-latest, target: aarch64-unknown-linux-gnu, artifact: wheels-linux-aarch64}
+          - {os: macos-latest, target: aarch64-apple-darwin, artifact: wheels-macos-arm64}
+          - {os: macos-13, target: x86_64-apple-darwin, artifact: wheels-macos-x86_64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: stamp commit into local version
+        run: |
+          short=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          python - <<PY
+          from pathlib import Path
+          import re
+          path = Path("pyproject.toml")
+          original = path.read_text()
+          updated = re.sub(r'^version = "([^"+]+)"', r'version = "\1+g${short}"', original, count=1, flags=re.MULTILINE)
+          path.write_text(updated)
+          PY
+          grep '^version' pyproject.toml
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # ratchet:PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --strip --out dist
+          rust-toolchain: 1.93.0
+          sccache: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*.whl
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error
+
+  sdist:
+    needs: [rust, python-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # ratchet:PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # ratchet:dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
+      - name: build mohaus-mojo sdist via mohaus
+        # mohaus dogfoods its own sdist for the mohaus-mojo workspace member.
+        run: |
+          uv pip install --system -e .
+          (cd python/mohaus_mojo && mohaus sdist --out "${GITHUB_WORKSPACE}/dist")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+  wheel-mojo:
+    needs: [mojo-parity]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # ratchet:actions/download-artifact@v8
+        with:
+          name: mojopkg-ubuntu-latest
+          path: target/mojopkg
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # ratchet:dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # ratchet:astral-sh/setup-uv@v8.1.0
+      - name: install mohaus from source
+        # Dogfooding: the mohaus pyo3 backend builds the mohaus-mojo wheel.
+        # `mojo package` produced the .mojopkgs above; `mohaus build` packages
+        # them with the templates into a pure (py3-none-any) wheel.
+        run: uv pip install --system -e .
+      - name: stage mojopkgs and templates into mohaus-mojo source tree
+        run: |
+          python scripts/stage_mohaus_mojo_assets.py \
+            --mojopkg-dir target/mojopkg \
+            --templates-source crates/mohaus-scaffold/src/templates \
+            --package-root python/mohaus_mojo
+      - name: build mohaus-mojo wheel via mohaus
+        run: |
+          mkdir -p dist
+          (cd python/mohaus_mojo && mohaus build --out "${GITHUB_WORKSPACE}/dist")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: wheels-mojo
+          path: dist/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+  index:
+    if: github.ref == 'refs/heads/main'
+    needs: [wheel-matrix, sdist, wheel-mojo]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # ratchet:actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # ratchet:actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: build PEP 503 simple index
+        run: |
+          python scripts/build_simple_index.py \
+            --dist dist \
+            --out site \
+            --commit "${GITHUB_SHA}" \
+            --commit-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
+            --prune
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # ratchet:actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # ratchet:actions/deploy-pages@v5

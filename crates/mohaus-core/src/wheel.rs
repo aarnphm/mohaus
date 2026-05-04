@@ -71,11 +71,8 @@ pub fn metadata_text(config: &ProjectConfig, editable: bool) -> String {
     }
     if editable {
         text.push_str("Requires-Dist: mohaus>=0.1,<0.2\n");
-        if editable_requires_mojo_package(config) {
-            text.push_str(&format!(
-                "Requires-Dist: mojo=={}\n",
-                config.mojo_version.as_str()
-            ));
+        if let Some(version) = editable_mojo_pin(config) {
+            text.push_str(&format!("Requires-Dist: mojo=={version}\n"));
         }
     }
     if let Some(readme) = metadata.readme.as_ref() {
@@ -117,9 +114,12 @@ fn folded_keywords(keywords: &[String]) -> Vec<String> {
     vec![keywords.join(",")]
 }
 
-fn editable_requires_mojo_package(config: &ProjectConfig) -> bool {
-    let version = config.mojo_version.as_str();
-    !version.contains("dev") && !version.contains("nightly")
+fn editable_mojo_pin(config: &ProjectConfig) -> Option<&str> {
+    let version = config.mojo_version.as_ref()?.as_str();
+    if version.contains("dev") || version.contains("nightly") {
+        return None;
+    }
+    Some(version)
 }
 
 /// Write WHEEL content.
@@ -470,9 +470,32 @@ const STAGING_SKIPPED_DIRS: &[&str] = &[
 const STAGING_SKIPPED_SUFFIXES: &[&str] =
     &[".pyc", ".pyo", ".so", ".dylib", ".pyd", ".swp", ".swo"];
 
+/// Top-level metadata files that live next to the package source but must not
+/// ship as runtime artifacts. They're already captured in METADATA via
+/// `[project] readme` and `[project] license-files`, and pyproject is build
+/// config. Only matched when they appear directly at the staged package root.
+const STAGING_SKIPPED_TOPLEVEL: &[&str] = &[
+    "pyproject.toml",
+    "README.md",
+    "README.rst",
+    "README.txt",
+    "README",
+    "LICENSE",
+    "LICENSE.md",
+    "LICENSE.txt",
+    "LICENCE",
+    ".mojo-version",
+    ".gitignore",
+];
+
 fn should_skip_staging_path(path: &Path, relative: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|value| value.to_str())
         && (name.starts_with(".#") || name.ends_with('~'))
+    {
+        return true;
+    }
+    if let Some(name) = relative.to_str()
+        && STAGING_SKIPPED_TOPLEVEL.contains(&name)
     {
         return true;
     }
@@ -583,7 +606,7 @@ mod tests {
             package: PackageName::parse("demo").unwrap(),
             version: "0.1.0".to_string(),
             requires_python: ">=3.11".to_string(),
-            mojo_version: MojoVersion::parse(version).unwrap(),
+            mojo_version: Some(MojoVersion::parse(version).unwrap()),
             mojo_src: PathBuf::from("src"),
             python_src: PathBuf::from("python"),
             modules: Vec::new(),
@@ -591,6 +614,7 @@ mod tests {
             mojo_flags: Vec::new(),
             mojo_include_paths: Vec::new(),
             metadata: crate::config::ProjectMetadata::default(),
+            pure: false,
         }
     }
 
@@ -623,7 +647,7 @@ mod tests {
             package: PackageName::parse("demo").unwrap(),
             version: "0.1.0".to_string(),
             requires_python: ">=3.11".to_string(),
-            mojo_version: MojoVersion::parse("0.26.2.0").unwrap(),
+            mojo_version: Some(MojoVersion::parse("0.26.2.0").unwrap()),
             mojo_src: PathBuf::from("src"),
             python_src: PathBuf::from("python"),
             modules: Vec::new(),
@@ -631,6 +655,7 @@ mod tests {
             mojo_flags: Vec::new(),
             mojo_include_paths: Vec::new(),
             metadata,
+            pure: false,
         }
     }
 
