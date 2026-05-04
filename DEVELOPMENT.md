@@ -255,8 +255,10 @@ mojo-parity ────────┘
   runs the source-hash parity diff against the Rust implementation,
   uploads `.mojopkg` artifacts.
 - **`wheel-matrix`** — `PyO3/maturin-action` builds `mohaus` wheels for
-  `linux-x86_64`, `linux-aarch64`, `macos-arm64`, `macos-x86_64`. Stamps
-  the commit SHA into `[project] version` as a PEP 440 local-version
+  `linux-x86_64`, `linux-aarch64`, `macos-arm64`. macOS x86_64 is
+  intentionally absent because GitHub's free `macos-13` runner pool
+  routinely queues for 10+ hours and would block the publish path.
+  Stamps the commit SHA into `[project] version` as a PEP 440 local-version
   segment so users can pin to specific commits.
 - **`sdist`** — `maturin sdist` for `mohaus`; `mohaus sdist` for
   `mohaus-mojo` (dogfooded through the mohaus CLI).
@@ -265,7 +267,35 @@ mojo-parity ────────┘
   pure wheel.
 - **`index`** (main only) — collects every artifact and publishes a PEP
   503 simple index to GitHub Pages. Each artifact gets a `#sha256=...`
-  fragment for `uv` to verify integrity.
+  fragment for `uv` to verify integrity. Uses
+  `if: always() && needs.<job>.result != 'failure'` so a single skipped
+  matrix shard never dams the publish path.
+
+### troubleshooting the index
+
+Common failure modes when `https://<owner>.github.io/mohaus/simple/` is
+empty or 404:
+
+- **Pages source still set to a branch**: GitHub's old default is to
+  publish from `gh-pages`. The Actions-based workflow only works when the
+  source is set to "GitHub Actions" (see above).
+- **Latest run never reached the `index` job**: any matrix shard hanging
+  in `queued` blocked the publish path. The current workflow's `if:`
+  guard tolerates skipped shards, but a `failure` still aborts. Check
+  `gh run view <id> --json jobs --jq '.jobs[] | "\(.name): \(.conclusion)"'`.
+- **Pushed to a non-`main` branch**: `index` is gated on
+  `github.ref == 'refs/heads/main'`. Branches don't publish.
+- **First push hasn't completed yet**: there are simply no artifacts
+  uploaded. Wait for the first green run on `main`.
+- **`uv` can't resolve from the index**: re-run with `-v` and look for
+  `404` on the `index.html`. Confirm trailing slash:
+  `https://aarnphm.github.io/mohaus/simple/` (with the slash, not without).
+
+While Pages is being set up, the artifacts are still reachable via:
+```bash
+gh run download <run-id>
+```
+which works for any workflow run regardless of Pages state.
 
 ## ratchet workflow
 

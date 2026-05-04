@@ -160,6 +160,11 @@ jobs:
 
   wheel-matrix:
     needs: [rust, python-backend]
+    # macOS x86_64 (`macos-13`) is intentionally absent. GitHub's free macOS
+    # Intel runner pool routinely queues for 10+ hours and blocks the
+    # downstream `index` job. Apple Silicon covers the vast majority of
+    # macOS dev machines today; bring x86_64 macOS back via a separate
+    # manual workflow once the SLA improves.
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +172,6 @@ jobs:
           - {os: ubuntu-latest, target: x86_64-unknown-linux-gnu, artifact: wheels-linux-x86_64}
           - {os: ubuntu-latest, target: aarch64-unknown-linux-gnu, artifact: wheels-linux-aarch64}
           - {os: macos-latest, target: aarch64-apple-darwin, artifact: wheels-macos-arm64}
-          - {os: macos-13, target: x86_64-apple-darwin, artifact: wheels-macos-x86_64}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
@@ -268,7 +272,16 @@ jobs:
           if-no-files-found: error
 
   index:
-    if: github.ref == 'refs/heads/main'
+    # Publish whatever artifacts made it. A single matrix shard hanging on a
+    # backlogged runner shouldn't keep the index from updating; the
+    # build_simple_index.py emitter validates that at least one project
+    # produced artifacts and fails otherwise.
+    if: |
+      always()
+      && github.ref == 'refs/heads/main'
+      && needs.wheel-matrix.result != 'failure'
+      && needs.sdist.result != 'failure'
+      && needs.wheel-mojo.result != 'failure'
     needs: [wheel-matrix, sdist, wheel-mojo]
     runs-on: ubuntu-latest
     permissions:
