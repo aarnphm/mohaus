@@ -5,15 +5,23 @@ build-backend = "maturin"
 [project]
 name = "mohaus"
 version = "0.1.0"
-description = "A maturin-shaped build backend for mixed Python and Mojo libraries."
+description = "Build backend and CLI for mixed Python and Mojo packages."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "aarnphm" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Aaron Pham" }]
 classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
   "Topic :: Software Development :: Build Tools",
 ]
+keywords = ["mojo", "packaging", "pep517", "python"]
+
+[project.urls]
+Repository = "https://github.com/aarnphm/mohaus"
 
 [project.scripts]
 mohaus = "mohaus._cli:main"

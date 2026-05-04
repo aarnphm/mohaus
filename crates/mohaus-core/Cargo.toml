@@ -1,9 +1,11 @@
 [package]
 name = "mohaus-core"
+description = "Core build, metadata, toolchain, wheel, sdist, and editable logic for mohaus."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 
 [dependencies]

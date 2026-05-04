@@ -1,9 +1,11 @@
 [package]
 name = "mohaus-pep517"
+description = "PyO3 bridge exposing mohaus PEP 517 and PEP 660 hooks."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 
 [lib]
