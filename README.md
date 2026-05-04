@@ -42,6 +42,9 @@ deadnix, and statix. Individual checks are exposed as `.#fmt`, `.#clippy`,
 `mohaus` editable with dev extras through nix-provided maturin, and installs the
 pre-commit hooks generated from the flake.
 
+We also have a few Mojo first parity ported under [src](src/README.md). The goal is
+to have this in native Mojo in future.
+
 The dev shell also generates shell completions under `.venv/share`, exports the
 zsh, fish, and bash lookup paths, and sources bash completion when the shell
 hook is running under bash.

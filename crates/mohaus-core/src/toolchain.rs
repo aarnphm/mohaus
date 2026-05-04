@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::OsString;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -130,6 +131,7 @@ pub fn run_command_with_env_remove(
         source,
     })?;
     if output.status.success() {
+        forward_command_output(&output.stdout, &output.stderr);
         return Ok(());
     }
     let stderr = if output.stderr.is_empty() {
@@ -142,6 +144,19 @@ pub fn run_command_with_env_remove(
         status: output.status.to_string(),
         stderr,
     })
+}
+
+fn forward_command_output(stdout: &[u8], stderr: &[u8]) {
+    if !stdout.is_empty() {
+        let mut handle = io::stdout().lock();
+        let _ = handle.write_all(stdout);
+        let _ = handle.flush();
+    }
+    if !stderr.is_empty() {
+        let mut handle = io::stderr().lock();
+        let _ = handle.write_all(stderr);
+        let _ = handle.flush();
+    }
 }
 
 #[cfg(test)]

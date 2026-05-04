@@ -4,6 +4,7 @@ pub mod build;
 pub mod config;
 pub mod editable;
 pub mod error;
+pub mod pyproject_edit;
 pub mod python_info;
 pub mod sdist;
 pub mod toolchain;

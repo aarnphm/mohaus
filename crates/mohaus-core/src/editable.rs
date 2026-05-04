@@ -323,6 +323,19 @@ pub fn extension_output_path(
     config.python_source_root().join(relative)
 }
 
+/// Hash a single Mojo source tree without any module / flag / include-path
+/// metadata. Exists so the Mojo parity port (`src/mohaus_hashing/`) and this
+/// crate exercise the same algorithm against the same fixture corpus.
+///
+/// # Errors
+///
+/// Returns an error when the tree cannot be walked or read.
+pub fn tree_hash(root: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hash_tree(root, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Hash all Mojo inputs relevant to an editable rebuild.
 ///
 /// # Errors

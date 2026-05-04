@@ -83,3 +83,38 @@ jobs:
           cd demo
           uv pip install --system --no-build-isolation -e .
           python -c "import demo; print(demo.passthrough('hello'))"
+
+  mojo-parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+      - name: install mojo
+        run: |
+          uv pip install --system "mojo==${MOJO_VERSION}" \
+            --index "${MOJO_INDEX_URL}" \
+            --prerelease allow
+          mojo --version
+      - name: package mohaus mojo modules
+        run: |
+          mojo package src/mohaus_toolchain -o target/mojopkg/mohaus_toolchain.mojopkg
+          mojo package src/mohaus_hashing -o target/mojopkg/mohaus_hashing.mojopkg
+          mojo package src/mohaus_scaffold -o target/mojopkg/mohaus_scaffold.mojopkg
+      - name: run mojo unit tests
+        run: |
+          mojo run -I src src/tests/test_toolchain.mojo
+          mojo run -I src src/tests/test_sha256_kat.mojo
+          mojo run -I src src/tests/test_hashing.mojo
+          mojo run -I src src/tests/test_scaffold.mojo
+      - name: parity diff against rust source_hash
+        run: |
+          uv pip install --system -e .
+          python tests/parity/run_source_hash_parity.py

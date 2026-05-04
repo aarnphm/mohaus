@@ -127,6 +127,73 @@
           runtimeInputs = [(rustToolchain pkgs)];
           text = "cargo fmt --check";
         };
+
+        mojoFormatHook = pkgs.writeShellApplication {
+          name = "mohaus-mojo-format-check";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.diffutils
+          ];
+          text = ''
+            resolve_mojo() {
+              if [ -n "''${MOHAUS_MOJO:-}" ] && [ -x "''${MOHAUS_MOJO:-}" ]; then
+                printf '%s\n' "$MOHAUS_MOJO"
+                return 0
+              fi
+
+              if command -v mojo >/dev/null 2>&1; then
+                command -v mojo
+                return 0
+              fi
+
+              if [ -n "''${MODULAR_HOME:-}" ] && [ -x "''${MODULAR_HOME:-}/bin/mojo" ]; then
+                printf '%s\n' "$MODULAR_HOME/bin/mojo"
+                return 0
+              fi
+
+              return 1
+            }
+
+            if [ "$#" -eq 0 ]; then
+              exit 0
+            fi
+
+            if ! mojo="$(resolve_mojo)"; then
+              printf '%s\n' "mojo format skipped: no executable found via \$MOHAUS_MOJO, \$PATH, or \$MODULAR_HOME/bin/mojo" >&2
+              exit 0
+            fi
+
+            tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+
+            failed=0
+            index=0
+            for source in "$@"; do
+              if [ ! -f "$source" ]; then
+                continue
+              fi
+
+              case "$source" in
+                *.mojo | *.🔥) ;;
+                *) continue ;;
+              esac
+
+              copy="$tmp/$index.mojo"
+              cp "$source" "$copy"
+              "$mojo" format --line-length 119 --quiet "$copy"
+              if ! diff -u "$source" "$copy" >&2; then
+                echo "mojo format check failed: $source" >&2
+                failed=1
+              fi
+              index=$((index + 1))
+            done
+
+            if [ "$failed" -ne 0 ]; then
+              echo "run: mojo format --line-length 119 <files>" >&2
+            fi
+            exit "$failed"
+          '';
+        };
       in {
         pre-commit = git-hooks-nix.lib.${system}.run {
           src = ./.;
@@ -136,6 +203,13 @@
               name = "cargo fmt";
               entry = "${cargoFmtHook}/bin/mohaus-cargo-fmt";
               pass_filenames = false;
+            };
+
+            mojo-format = {
+              enable = true;
+              name = "mojo format";
+              entry = "${mojoFormatHook}/bin/mohaus-mojo-format-check";
+              files = "\\.(mojo|🔥)$";
             };
 
             ruff-format = {

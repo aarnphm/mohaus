@@ -124,6 +124,38 @@ enum CommandKind {
         #[arg(long, default_value_t = 250)]
         interval_ms: u64,
     },
+
+    /// Add a dependency to pyproject.toml. Defaults to a Python package via
+    /// `uv add`. With `--mojo` adds an entry to `tool.mohaus.mojo-include-paths`
+    /// (or `tool.mohaus.mojo-dependencies` when the spec is a remote pin).
+    Add {
+        /// Package specifier. Python form: `name`, `name==1.2`, `name @ url`,
+        /// or a local `./path`. Mojo form: a path to a `.mojopkg` file or a
+        /// directory containing one.
+        spec: String,
+
+        /// Treat the spec as a Mojo package. Adds it to
+        /// `tool.mohaus.mojo-include-paths`.
+        #[arg(long)]
+        mojo: bool,
+
+        /// Pin into `[project.optional-dependencies] <extra>` (Python only).
+        #[arg(long)]
+        extra: Option<String>,
+
+        /// Pin into `[dependency-groups] <group>` via `uv add --group` (Python only).
+        #[arg(long)]
+        group: Option<String>,
+
+        /// Pin as a build-system requirement (`requires` in `[build-system]`).
+        /// Useful for mojo nightly pins.
+        #[arg(long)]
+        build_system: bool,
+
+        /// Forward extra args to `uv add` after the spec (Python only).
+        #[arg(last = true)]
+        passthrough: Vec<String>,
+    },
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -135,6 +167,14 @@ fn run(cli: Cli) -> Result<()> {
         CommandKind::Develop { no_build_isolation } => develop(no_build_isolation),
         CommandKind::Sdist { out } => sdist(out),
         CommandKind::Watch { interval_ms } => watch(interval_ms),
+        CommandKind::Add {
+            spec,
+            mojo,
+            extra,
+            group,
+            build_system,
+            passthrough,
+        } => add(spec, mojo, extra, group, build_system, passthrough),
     }
 }
 
@@ -212,6 +252,72 @@ fn sdist(out: PathBuf) -> Result<()> {
         out_dir: out,
     })?;
     println!("{}", archive.display());
+    Ok(())
+}
+
+fn add(
+    spec: String,
+    mojo: bool,
+    extra: Option<String>,
+    group: Option<String>,
+    build_system: bool,
+    passthrough: Vec<String>,
+) -> Result<()> {
+    let project_dir = env::current_dir().context("could not read current directory")?;
+    if mojo {
+        if extra.is_some() || group.is_some() || !passthrough.is_empty() {
+            return Err(anyhow!(
+                "--mojo is incompatible with --extra, --group, or trailing uv args"
+            ));
+        }
+        return add_mojo_dependency(&project_dir, &spec, build_system);
+    }
+    add_python_dependency(&project_dir, &spec, extra, group, build_system, passthrough)
+}
+
+fn add_python_dependency(
+    project_dir: &Path,
+    spec: &str,
+    extra: Option<String>,
+    group: Option<String>,
+    build_system: bool,
+    passthrough: Vec<String>,
+) -> Result<()> {
+    if build_system {
+        let pyproject = project_dir.join("pyproject.toml");
+        mohaus_core::pyproject_edit::add_build_system_requirement(&pyproject, spec)?;
+        return Ok(());
+    }
+    let uv = mohaus_core::toolchain::find_program_in_path("uv")
+        .ok_or_else(|| anyhow!("`uv` is not on PATH; install uv to use `mohaus add`"))?;
+    let mut args = vec![OsString::from("add")];
+    if let Some(value) = extra {
+        args.push(OsString::from("--optional"));
+        args.push(OsString::from(value));
+    }
+    if let Some(value) = group {
+        args.push(OsString::from("--group"));
+        args.push(OsString::from(value));
+    }
+    args.push(OsString::from(spec));
+    for value in passthrough {
+        args.push(OsString::from(value));
+    }
+    run_status(uv, args)
+}
+
+fn add_mojo_dependency(project_dir: &Path, spec: &str, build_system: bool) -> Result<()> {
+    let pyproject = project_dir.join("pyproject.toml");
+    if !pyproject.is_file() {
+        return Err(anyhow!("no pyproject.toml at {}", pyproject.display()));
+    }
+    if build_system {
+        mohaus_core::pyproject_edit::add_build_system_requirement(&pyproject, spec)?;
+        return Ok(());
+    }
+    let resolved = mohaus_core::pyproject_edit::resolve_mojo_include(project_dir, spec)?;
+    mohaus_core::pyproject_edit::add_mojo_include_path(&pyproject, &resolved)?;
+    println!("added mojo include path: {resolved}");
     Ok(())
 }
 
@@ -469,6 +575,72 @@ mod tests {
         );
         let pyproject = fs::read_to_string(destination.join("pyproject.toml"))?;
         assert!(pyproject.contains("name = \"monpy\""));
+        Ok(())
+    }
+
+    #[test]
+    fn add_mojo_flag_routes_to_include_paths() -> anyhow::Result<()> {
+        let cli = crate::Cli::try_parse_from(["mohaus", "add", "--mojo", "vendor/some_pkg"])?;
+        match cli.command {
+            crate::CommandKind::Add {
+                spec,
+                mojo,
+                extra,
+                group,
+                build_system,
+                passthrough,
+            } => {
+                assert_eq!(spec, "vendor/some_pkg");
+                assert!(mojo);
+                assert!(!build_system);
+                assert!(extra.is_none());
+                assert!(group.is_none());
+                assert!(passthrough.is_empty());
+            }
+            other => panic!("expected Add, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn add_python_default_passes_through_uv_args() -> anyhow::Result<()> {
+        let cli =
+            crate::Cli::try_parse_from(["mohaus", "add", "numpy>=1", "--", "--prerelease=allow"])?;
+        match cli.command {
+            crate::CommandKind::Add {
+                spec,
+                mojo,
+                passthrough,
+                ..
+            } => {
+                assert_eq!(spec, "numpy>=1");
+                assert!(!mojo);
+                assert_eq!(passthrough, vec!["--prerelease=allow".to_string()]);
+            }
+            other => panic!("expected Add, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn add_mojo_dependency_appends_to_pyproject() -> anyhow::Result<()> {
+        let root = TempDir::new()?;
+        let project = root.path();
+        fs::create_dir_all(project.join("vendor/some_pkg"))?;
+        fs::write(
+            project.join("pyproject.toml"),
+            "[build-system]\n\
+             requires = [\"mohaus>=0.1,<0.2\"]\n\
+             build-backend = \"mohaus.backend\"\n\n\
+             [project]\n\
+             name = \"demo\"\n\
+             version = \"0.1.0\"\n\n\
+             [tool.mohaus]\n\
+             mojo-include-paths = []\n",
+        )?;
+        crate::add_mojo_dependency(project, "vendor/some_pkg", false)?;
+        let updated = fs::read_to_string(project.join("pyproject.toml"))?;
+        assert!(updated.contains("\"vendor/some_pkg\","));
         Ok(())
     }
 

@@ -2,10 +2,11 @@
 
 use std::path::PathBuf;
 
+use mohaus_core::editable::{source_hash, tree_hash};
 use mohaus_core::{
-    BuildOptions, EditableOptions, MetadataOptions, PythonInfo, SdistOptions, build_editable_wheel,
-    build_sdist as core_build_sdist, build_wheel as core_build_wheel, ensure_editable_built,
-    prepare_metadata_for_build_editable as core_prepare_editable_metadata,
+    BuildOptions, EditableOptions, MetadataOptions, ProjectConfig, PythonInfo, SdistOptions,
+    build_editable_wheel, build_sdist as core_build_sdist, build_wheel as core_build_wheel,
+    ensure_editable_built, prepare_metadata_for_build_editable as core_prepare_editable_metadata,
     prepare_metadata_for_build_wheel as core_prepare_metadata,
 };
 use pyo3::exceptions::PyRuntimeError;
@@ -126,6 +127,21 @@ fn rebuild_editable(py: Python<'_>, project_root: String) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn source_hash_for_project(project_root: String) -> PyResult<String> {
+    let config = ProjectConfig::load(PathBuf::from(&project_root)).map_err(to_py_error)?;
+    let module = config
+        .modules
+        .first()
+        .ok_or_else(|| PyRuntimeError::new_err("project has no Mojo modules configured"))?;
+    source_hash(&config, module).map_err(to_py_error)
+}
+
+#[pyfunction]
+fn tree_hash_for_dir(root: String) -> PyResult<String> {
+    tree_hash(&PathBuf::from(root)).map_err(to_py_error)
+}
+
+#[pyfunction]
 fn cli(argv: Vec<String>) -> i32 {
     let args = std::iter::once("mohaus".to_string()).chain(argv);
     match mohaus_cli::run_from(args) {
@@ -147,6 +163,8 @@ fn mohaus_pep517(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prepare_metadata_for_build_wheel, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_metadata_for_build_editable, m)?)?;
     m.add_function(wrap_pyfunction!(rebuild_editable, m)?)?;
+    m.add_function(wrap_pyfunction!(source_hash_for_project, m)?)?;
+    m.add_function(wrap_pyfunction!(tree_hash_for_dir, m)?)?;
     m.add_function(wrap_pyfunction!(cli, m)?)?;
     Ok(())
 }
