@@ -29,3 +29,7 @@ nix develop
 nix run .#check
 nix develop -c pre-commit run --all-files
 ```
+
+## acknowledgements
+
+This is largely inspired by [PyO3/maturin](https://github.com/pyo3/maturin), but for Mojo.
