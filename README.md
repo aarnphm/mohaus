@@ -1,6 +1,6 @@
-# mohaus
+# mohaus [ALPHA]
 
-mohaus is a maturin-shaped build backend for mixed Python and Mojo libraries.
+mohaus builds and publish Mojo packages as Python packages
 
 It is currently v1 scaffolding: a Rust workspace bootstrapped by maturin, a
 PEP 517/660 Python backend, and a CLI that can initialize projects shaped like:

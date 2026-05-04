@@ -26,6 +26,7 @@ const SELF_WHEEL_ENV: &str = "MOHAUS_SELF_WHEEL";
 #[derive(Debug)]
 struct SelfWheelhouse {
     path: PathBuf,
+    wheel: Option<PathBuf>,
     cleanup: bool,
 }
 
@@ -196,8 +197,9 @@ fn build(release: bool, out: PathBuf) -> Result<()> {
 
 fn develop(no_build_isolation: bool) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
-    let disable_isolation = no_build_isolation || should_disable_isolation(&project_dir)?;
-    run_editable_install(disable_isolation)
+    let config = ProjectConfig::load(&project_dir)?;
+    let disable_isolation = no_build_isolation || should_disable_isolation(&config);
+    run_editable_install(disable_isolation, editable_mojo_requirement(&config))
 }
 
 fn sdist(out: PathBuf) -> Result<()> {
@@ -220,22 +222,34 @@ fn watch(interval_ms: u64) -> Result<()> {
     }
 }
 
-fn should_disable_isolation(project_dir: &PathBuf) -> Result<bool> {
+fn should_disable_isolation(config: &ProjectConfig) -> bool {
     if env::var_os("MOHAUS_MOJO").is_some() {
-        return Ok(true);
+        return true;
     }
-    let config = ProjectConfig::load(project_dir)?;
     let version = config.mojo_version.as_str();
-    Ok(version.contains("dev") || version.contains("nightly"))
+    version.contains("dev") || version.contains("nightly")
 }
 
-fn run_editable_install(no_build_isolation: bool) -> Result<()> {
+fn editable_mojo_requirement(config: &ProjectConfig) -> Option<OsString> {
+    let version = config.mojo_version.as_str();
+    if version.contains("dev") || version.contains("nightly") {
+        return None;
+    }
+    Some(OsString::from(format!("mojo=={version}")))
+}
+
+fn run_editable_install(
+    no_build_isolation: bool,
+    mojo_requirement: Option<OsString>,
+) -> Result<()> {
     let self_wheelhouse = self_wheelhouse()?;
     if let Some(uv) = mohaus_core::toolchain::find_program_in_path("uv") {
         let mut args = vec![OsString::from("pip")];
         args.extend(editable_install_args(
             no_build_isolation,
             self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
+            self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
+            mojo_requirement.clone(),
         ));
         return run_status(uv, args);
     }
@@ -247,6 +261,8 @@ fn run_editable_install(no_build_isolation: bool) -> Result<()> {
     args.extend(editable_install_args(
         no_build_isolation,
         self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
+        self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
+        mojo_requirement,
     ));
     run_status(python, args)
 }
@@ -254,12 +270,18 @@ fn run_editable_install(no_build_isolation: bool) -> Result<()> {
 fn editable_install_args(
     no_build_isolation: bool,
     self_find_links: Option<OsString>,
+    self_wheel: Option<OsString>,
+    mojo_requirement: Option<OsString>,
 ) -> Vec<OsString> {
-    let mut args = vec![
-        OsString::from("install"),
-        OsString::from("-e"),
-        OsString::from("."),
-    ];
+    let mut args = vec![OsString::from("install")];
+    if let Some(wheel) = self_wheel {
+        args.push(wheel);
+    }
+    if let Some(requirement) = mojo_requirement {
+        args.push(requirement);
+    }
+    args.push(OsString::from("-e"));
+    args.push(OsString::from("."));
     if let Some(find_links) = self_find_links {
         args.push(OsString::from("--find-links"));
         args.push(find_links);
@@ -279,6 +301,7 @@ fn self_wheelhouse() -> Result<Option<SelfWheelhouse>> {
     };
     Ok(Some(SelfWheelhouse {
         path: PathBuf::from(value),
+        wheel: None,
         cleanup: false,
     }))
 }
@@ -302,7 +325,8 @@ impl SelfWheelhouse {
         ));
         fs::create_dir_all(&path)
             .with_context(|| format!("could not create {}", path.display()))?;
-        fs::copy(&wheel, path.join(file_name)).with_context(|| {
+        let wheel_path = path.join(file_name);
+        fs::copy(&wheel, &wheel_path).with_context(|| {
             format!(
                 "could not copy self wheel {} into {}",
                 wheel.display(),
@@ -311,12 +335,19 @@ impl SelfWheelhouse {
         })?;
         Ok(Self {
             path,
+            wheel: Some(wheel_path),
             cleanup: true,
         })
     }
 
     fn arg(&self) -> OsString {
         self.path.as_os_str().to_os_string()
+    }
+
+    fn wheel_arg(&self) -> Option<OsString> {
+        self.wheel
+            .as_ref()
+            .map(|wheel| wheel.as_os_str().to_os_string())
     }
 }
 
@@ -425,8 +456,12 @@ mod tests {
 
     #[test]
     fn editable_install_args_include_self_find_links() {
-        let args =
-            crate::editable_install_args(false, Some(OsString::from("/tmp/mohaus-wheelhouse")));
+        let args = crate::editable_install_args(
+            false,
+            Some(OsString::from("/tmp/mohaus-wheelhouse")),
+            None,
+            None,
+        );
 
         assert_eq!(
             args,
@@ -443,11 +478,58 @@ mod tests {
 
     #[test]
     fn editable_install_args_keep_no_build_isolation_escape_hatch() {
-        let args = crate::editable_install_args(true, None);
+        let args = crate::editable_install_args(true, None, None, None);
 
         assert_eq!(
             args,
             ["install", "-e", ".", "--no-build-isolation"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn editable_install_args_install_self_wheel_as_root_requirement() {
+        let args = crate::editable_install_args(
+            false,
+            Some(OsString::from("/tmp/mohaus-wheelhouse")),
+            Some(OsString::from("/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl")),
+            None,
+        );
+
+        assert_eq!(
+            args,
+            [
+                "install",
+                "/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl",
+                "-e",
+                ".",
+                "--find-links",
+                "/tmp/mohaus-wheelhouse",
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn editable_install_args_install_stable_mojo_as_root_requirement() {
+        let args = crate::editable_install_args(
+            false,
+            Some(OsString::from("/tmp/mohaus-wheelhouse")),
+            Some(OsString::from("/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl")),
+            Some(OsString::from("mojo==0.26.2.0")),
+        );
+
+        assert_eq!(
+            args,
+            [
+                "install",
+                "/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl",
+                "mojo==0.26.2.0",
+                "-e",
+                ".",
+                "--find-links",
+                "/tmp/mohaus-wheelhouse",
+            ]
+            .map(OsString::from)
         );
     }
 
@@ -464,6 +546,7 @@ mod tests {
             .collect::<std::io::Result<Vec<_>>>()?;
 
         assert_eq!(entries, vec![wheelhouse.path.join(wheel_name)]);
+        assert_eq!(wheelhouse.wheel, Some(wheelhouse.path.join(wheel_name)));
         assert!(
             !wheelhouse
                 .path

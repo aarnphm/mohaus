@@ -22,9 +22,20 @@ pub fn metadata_text(config: &ProjectConfig, editable: bool) -> String {
     text.push_str(&format!("Requires-Python: {}\n", config.requires_python));
     if editable {
         text.push_str("Requires-Dist: mohaus>=0.1,<0.2\n");
+        if editable_requires_mojo_package(config) {
+            text.push_str(&format!(
+                "Requires-Dist: mojo=={}\n",
+                config.mojo_version.as_str()
+            ));
+        }
     }
     text.push('\n');
     text
+}
+
+fn editable_requires_mojo_package(config: &ProjectConfig) -> bool {
+    let version = config.mojo_version.as_str();
+    !version.contains("dev") && !version.contains("nightly")
 }
 
 /// Write WHEEL content.
@@ -254,4 +265,53 @@ pub fn file_hash(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::config::{MojoVersion, PackageName};
+    use crate::wheel::metadata_text;
+
+    fn config_with_mojo(version: &str) -> crate::config::ProjectConfig {
+        crate::config::ProjectConfig {
+            project_dir: PathBuf::from("/project"),
+            package: PackageName::parse("demo").unwrap(),
+            version: "0.1.0".to_string(),
+            requires_python: ">=3.11".to_string(),
+            mojo_version: MojoVersion::parse(version).unwrap(),
+            mojo_src: PathBuf::from("src"),
+            python_src: PathBuf::from("python"),
+            modules: Vec::new(),
+            strip: true,
+            mojo_flags: Vec::new(),
+            mojo_include_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn editable_metadata_requires_stable_mojo_package() {
+        let metadata = metadata_text(&config_with_mojo("0.26.2.0"), true);
+
+        assert!(metadata.contains("Requires-Dist: mohaus>=0.1,<0.2\n"));
+        assert!(metadata.contains("Requires-Dist: mojo==0.26.2.0\n"));
+    }
+
+    #[test]
+    fn editable_metadata_does_not_require_dev_mojo_package() {
+        let metadata = metadata_text(&config_with_mojo("1.0.0.dev0"), true);
+
+        assert!(metadata.contains("Requires-Dist: mohaus>=0.1,<0.2\n"));
+        assert!(!metadata.contains("Requires-Dist: mojo=="));
+    }
+
+    #[test]
+    fn production_metadata_does_not_require_build_runtime_packages() {
+        let metadata = metadata_text(&config_with_mojo("0.26.2.0"), false);
+
+        assert!(!metadata.contains("Requires-Dist: mohaus"));
+        assert!(!metadata.contains("Requires-Dist: mojo"));
+    }
 }
