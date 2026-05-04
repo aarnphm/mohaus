@@ -34,27 +34,21 @@ def resolve_mojo_executable() raises -> String:
         Error if no executable is found.
     """
     var override_path = getenv(MOHAUS_MOJO_ENV)
-    if len(override_path) > 0 and exists(override_path):
+    if override_path.byte_length() > 0 and exists(override_path):
         return override_path
 
     var path_value = getenv(PATH_ENV)
-    if len(path_value) > 0:
-        var separator: String
-
-        @parameter
-        if _is_windows():
-            separator = ";"
-        else:
-            separator = ":"
+    if path_value.byte_length() > 0:
+        var separator = ":"
         for entry in path_value.split(separator):
-            if len(entry) == 0:
+            if entry.byte_length() == 0:
                 continue
             var candidate = String(entry) + "/mojo"
             if exists(candidate):
                 return candidate
 
     var modular_home = getenv(MODULAR_HOME_ENV)
-    if len(modular_home) > 0:
+    if modular_home.byte_length() > 0:
         var candidate = modular_home + "/bin/mojo"
         if exists(candidate):
             return candidate
@@ -65,7 +59,7 @@ def resolve_mojo_executable() raises -> String:
 def probe_mojo_version(executable: String) raises -> String:
     """Run `<executable> --version` and return trimmed stdout."""
     var output = subprocess_run(executable + " --version")
-    return String(output).strip()
+    return String(String(output).strip())
 
 
 def normalize_mojo_version_token(value: String) -> String:
@@ -140,10 +134,3 @@ def _is_alnum(byte: UInt8) -> Bool:
         or (byte >= UInt8(97) and byte <= UInt8(122))
         or (byte >= UInt8(65) and byte <= UInt8(90))
     )
-
-
-@parameter
-def _is_windows() -> Bool:
-    from std.sys.info import CompilationTarget
-
-    return CompilationTarget.is_windows()

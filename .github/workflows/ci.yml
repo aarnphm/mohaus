@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 on:
   push:
@@ -72,7 +72,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            mojo_flags: "--target-cpu=x86-64"
+          - os: macos-latest
+            mojo_flags: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
@@ -93,8 +97,21 @@ jobs:
       - name: install mohaus
         run: uv pip install --system -e .
       - name: smoke
+        env:
+          MOHAUS_SMOKE_MOJO_FLAGS: ${{ matrix.mojo_flags }}
         run: |
           mohaus init demo
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          flags = [flag for flag in os.environ.get("MOHAUS_SMOKE_MOJO_FLAGS", "").split() if flag]
+          if flags:
+            rendered = ", ".join(f'"{flag}"' for flag in flags)
+            pyproject = Path("demo/pyproject.toml")
+            original = pyproject.read_text()
+            pyproject.write_text(original.replace("mojo-flags = []", f"mojo-flags = [{rendered}]", 1))
+          PY
           cd demo
           uv pip install --system --no-build-isolation -e .
           python -c "import demo; print(demo.passthrough('hello'))"
