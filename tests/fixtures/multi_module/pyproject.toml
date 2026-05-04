@@ -1,0 +1,20 @@
+[build-system]
+requires = ["mohaus>=0.1,<0.2"]
+build-backend = "mohaus.backend"
+
+[project]
+name = "multi_module"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.mohaus]
+mojo-src = "src"
+python-src = "python"
+
+[[tool.mohaus.modules]]
+name = "multi_module._native"
+entry = "src/lib.mojo"
+
+[[tool.mohaus.modules]]
+name = "multi_module._extra"
+entry = "src/extra.mojo"

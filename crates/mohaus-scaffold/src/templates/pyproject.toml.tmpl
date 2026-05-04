@@ -5,7 +5,16 @@ build-backend = "mohaus.backend"
 [project]
 name = "{{project_name}}"
 version = "0.1.0"
+description = "Mixed Python and Mojo package scaffolded by mohaus."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "your name", email = "you@example.com" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Build Tools",
+]
 
 [tool.mohaus]
 mojo-src = "src"

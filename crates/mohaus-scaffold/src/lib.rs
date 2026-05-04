@@ -13,6 +13,7 @@ const LIB_MOJO_TEMPLATE: &str = include_str!("templates/lib.mojo.tmpl");
 const PY_INIT_TEMPLATE: &str = include_str!("templates/__init__.py.tmpl");
 const README_TEMPLATE: &str = include_str!("templates/README.md.tmpl");
 const GITIGNORE_TEMPLATE: &str = include_str!("templates/gitignore.tmpl");
+const LICENSE_TEMPLATE: &str = include_str!("templates/LICENSE.tmpl");
 
 /// Options for project scaffolding.
 #[derive(Clone, Debug)]
@@ -75,6 +76,11 @@ pub fn scaffold_project(options: &ScaffoldOptions) -> Result<()> {
         GITIGNORE_TEMPLATE,
         &replacements,
     )?;
+    write_template(
+        &options.destination.join("LICENSE"),
+        LICENSE_TEMPLATE,
+        &replacements,
+    )?;
     write_file(
         &options.destination.join(".mojo-version"),
         DEFAULT_MOJO_VERSION.as_bytes(),
@@ -123,4 +129,52 @@ fn write_template(path: &Path, template: &str, replacements: &[(&str, String)]) 
         rendered = rendered.replace(needle, replacement);
     }
     write_file(path, rendered.as_bytes())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use mohaus_core::config::ProjectConfig;
+    use mohaus_core::wheel::metadata_text;
+    use tempfile::TempDir;
+
+    use crate::{ScaffoldOptions, scaffold_project};
+
+    #[test]
+    fn scaffold_round_trips_into_project_config() {
+        let root = TempDir::new().unwrap();
+        let destination = root.path().join("acme");
+        scaffold_project(&ScaffoldOptions {
+            name: "acme".to_string(),
+            destination: destination.clone(),
+        })
+        .unwrap();
+
+        let config = ProjectConfig::load(&destination).unwrap();
+        assert_eq!(config.package.as_str(), "acme");
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].name.as_str(), "acme._native");
+        assert!(destination.join("LICENSE").is_file());
+        assert!(destination.join(".mojo-version").is_file());
+    }
+
+    #[test]
+    fn scaffold_metadata_is_publishable_shape() {
+        let root = TempDir::new().unwrap();
+        let destination = root.path().join("acme");
+        scaffold_project(&ScaffoldOptions {
+            name: "acme".to_string(),
+            destination: destination.clone(),
+        })
+        .unwrap();
+
+        let config = ProjectConfig::load(&destination).unwrap();
+        let metadata = metadata_text(&config, false);
+        assert!(metadata.contains("Metadata-Version: 2.4"));
+        assert!(metadata.contains("Name: acme"));
+        assert!(metadata.contains("License-Expression: Apache-2.0"));
+        assert!(metadata.contains("License-File: LICENSE"));
+        assert!(metadata.contains("Description-Content-Type: text/markdown"));
+        assert!(metadata.contains("# acme"));
+    }
 }

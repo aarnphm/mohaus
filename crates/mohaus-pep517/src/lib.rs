@@ -22,7 +22,6 @@ fn build_wheel(
     metadata_directory: Option<String>,
 ) -> PyResult<String> {
     let _ = config_settings;
-    let _ = metadata_directory;
     let project_dir = current_dir_py()?;
     let python = python_info(py)?;
     let path = core_build_wheel(&BuildOptions {
@@ -30,6 +29,7 @@ fn build_wheel(
         out_dir: PathBuf::from(wheel_directory),
         python,
         release: true,
+        metadata_dir: metadata_directory.map(PathBuf::from),
     })
     .map_err(to_py_error)?;
     file_name_string(&path)
@@ -57,13 +57,13 @@ fn build_editable(
     metadata_directory: Option<String>,
 ) -> PyResult<String> {
     let _ = config_settings;
-    let _ = metadata_directory;
     let project_dir = current_dir_py()?;
     let python = python_info(py)?;
     let path = build_editable_wheel(&EditableOptions {
         project_dir,
         out_dir: PathBuf::from(wheel_directory),
         python,
+        metadata_dir: metadata_directory.map(PathBuf::from),
     })
     .map_err(to_py_error)?;
     file_name_string(&path)

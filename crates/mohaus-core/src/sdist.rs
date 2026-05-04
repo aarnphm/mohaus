@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use tar::Builder;
+use tar::{Builder, Header};
 use walkdir::WalkDir;
 
 use crate::config::ProjectConfig;
 use crate::error::{MohausError, Result};
+use crate::wheel::metadata_text;
 
 /// Write an sdist archive for a project.
 ///
@@ -45,6 +46,24 @@ pub fn write_sdist_archive(config: &ProjectConfig, out_dir: &Path) -> Result<Pat
                 source,
             })?;
     }
+    let pkg_info = metadata_text(config, false);
+    let pkg_info_bytes = pkg_info.as_bytes();
+    let mut header = Header::new_gnu();
+    header
+        .set_path(format!("{prefix}/PKG-INFO"))
+        .map_err(|source| MohausError::Archive {
+            path: archive_path.clone(),
+            source,
+        })?;
+    header.set_size(pkg_info_bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append(&header, pkg_info_bytes)
+        .map_err(|source| MohausError::Archive {
+            path: archive_path.clone(),
+            source,
+        })?;
     builder.finish().map_err(|source| MohausError::Archive {
         path: archive_path.clone(),
         source,

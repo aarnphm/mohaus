@@ -9,5 +9,8 @@ repository.workspace = true
 [dependencies]
 mohaus-core = { path = "../mohaus-core" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

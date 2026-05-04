@@ -1,15 +1,16 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
 use crate::config::ProjectConfig;
-use crate::editable::{compile_module, ensure_editable_built, extension_output_path};
+use crate::editable::{compile_module, ensure_editable_built};
 use crate::error::{MohausError, Result};
 use crate::python_info::PythonInfo;
 use crate::sdist::write_sdist_archive;
 use crate::toolchain::resolve_verified_mojo;
-use crate::wheel::{copy_dir, write_dist_info, write_file, write_wheel_archive};
+use crate::wheel::{
+    copy_dir, copy_prepared_dist_info, write_dist_info, write_file, write_wheel_archive,
+};
 
 /// Options for building a wheel.
 #[derive(Clone, Debug)]
@@ -18,6 +19,11 @@ pub struct BuildOptions {
     pub out_dir: PathBuf,
     pub python: PythonInfo,
     pub release: bool,
+    /// PEP 517 `metadata_directory` previously populated by
+    /// `prepare_metadata_for_build_wheel`. When present, mohaus reuses the
+    /// dist-info contents instead of regenerating them, satisfying the
+    /// byte-for-byte requirement of the protocol.
+    pub metadata_dir: Option<PathBuf>,
 }
 
 /// Options for building an editable wheel.
@@ -26,6 +32,9 @@ pub struct EditableOptions {
     pub project_dir: PathBuf,
     pub out_dir: PathBuf,
     pub python: PythonInfo,
+    /// PEP 660 `metadata_directory` previously populated by
+    /// `prepare_metadata_for_build_editable`.
+    pub metadata_dir: Option<PathBuf>,
 }
 
 /// Options for building an sdist.
@@ -64,13 +73,19 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
         compile_module(&config, module, &output, &mojo.executable)?;
     }
 
-    write_dist_info(
-        staged.path(),
-        &config,
-        &options.python.wheel_tag,
-        false,
-        false,
-    )?;
+    let reused = match &options.metadata_dir {
+        Some(metadata_dir) => copy_prepared_dist_info(metadata_dir, staged.path(), &config)?,
+        None => false,
+    };
+    if !reused {
+        write_dist_info(
+            staged.path(),
+            &config,
+            &options.python.wheel_tag,
+            false,
+            false,
+        )?;
+    }
     let wheel_name = format!(
         "{}-{}-{}.whl",
         config.package.escaped(),
@@ -102,7 +117,13 @@ pub fn build_editable_wheel(options: &EditableOptions) -> Result<PathBuf> {
         python_string_literal(&config.project_dir)
     );
     write_file(&staged.path().join(pth_name), pth.as_bytes())?;
-    write_dist_info(staged.path(), &config, &options.python.pure_tag, true, true)?;
+    let reused = match &options.metadata_dir {
+        Some(metadata_dir) => copy_prepared_dist_info(metadata_dir, staged.path(), &config)?,
+        None => false,
+    };
+    if !reused {
+        write_dist_info(staged.path(), &config, &options.python.pure_tag, true, true)?;
+    }
     let wheel_name = format!(
         "{}-{}-{}.whl",
         config.package.escaped(),
@@ -196,26 +217,4 @@ fn extension_output_path_in_root(
 fn python_string_literal(path: &Path) -> String {
     let text = path.display().to_string();
     format!("{text:?}")
-}
-
-#[allow(dead_code)]
-fn copy_editable_extension_to_source(
-    config: &ProjectConfig,
-    module: &crate::config::MojoModule,
-    ext_suffix: &str,
-    staged_extension: &Path,
-) -> Result<()> {
-    let destination = extension_output_path(config, module, ext_suffix);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| MohausError::CreateDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    fs::copy(staged_extension, &destination).map_err(|source| MohausError::CopyFile {
-        source_path: staged_extension.to_path_buf(),
-        dest_path: destination,
-        source,
-    })?;
-    Ok(())
 }

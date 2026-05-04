@@ -16,6 +16,8 @@ clap.workspace = true
 clap_complete.workspace = true
 mohaus-core = { path = "../mohaus-core" }
 mohaus-scaffold = { path = "../mohaus-scaffold" }
+notify.workspace = true
+notify-debouncer-mini.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

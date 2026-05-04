@@ -4,9 +4,9 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::thread;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -15,10 +15,12 @@ use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use mohaus_core::{
-    BuildOptions, EditableOptions, ProjectConfig, PythonInfo, SdistOptions, build_editable_wheel,
-    build_sdist, build_wheel, ensure_editable_built,
+    BuildOptions, ProjectConfig, PythonInfo, SdistOptions, build_sdist, build_wheel,
+    ensure_editable_built,
 };
 use mohaus_scaffold::{ScaffoldOptions, scaffold_project};
+use notify::RecursiveMode;
+use notify_debouncer_mini::new_debouncer;
 
 const SELF_FIND_LINKS_ENV: &str = "MOHAUS_SELF_FIND_LINKS";
 const SELF_WHEEL_ENV: &str = "MOHAUS_SELF_WHEEL";
@@ -118,8 +120,8 @@ enum CommandKind {
 
     /// Keep editable Mojo extensions warm.
     Watch {
-        /// Polling interval in milliseconds.
-        #[arg(long, default_value_t = 750)]
+        /// Debounce interval in milliseconds.
+        #[arg(long, default_value_t = 250)]
         interval_ms: u64,
     },
 }
@@ -190,6 +192,7 @@ fn build(release: bool, out: PathBuf) -> Result<()> {
         out_dir: out,
         python,
         release,
+        metadata_dir: None,
     })?;
     println!("{}", wheel.display());
     Ok(())
@@ -215,11 +218,61 @@ fn sdist(out: PathBuf) -> Result<()> {
 fn watch(interval_ms: u64) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
     let python = PythonInfo::detect()?;
+    let config = ProjectConfig::load(&project_dir)?;
     let interval = Duration::from_millis(interval_ms);
-    loop {
-        ensure_editable_built(&project_dir, &python)?;
-        thread::sleep(interval);
+    let (tx, rx) = mpsc::channel();
+    let mut debouncer = new_debouncer(interval, tx)
+        .map_err(|error| anyhow!("could not create filesystem watcher: {error}"))?;
+
+    let watch_roots = watch_roots(&project_dir, &config);
+    for root in &watch_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        debouncer
+            .watcher()
+            .watch(root, RecursiveMode::Recursive)
+            .map_err(|error| anyhow!("could not watch {}: {error}", root.display()))?;
     }
+
+    eprintln!("mohaus watch: building once before tracking changes");
+    ensure_editable_built(&project_dir, &python)?;
+    eprintln!(
+        "mohaus watch: ready ({} roots, debounce {interval_ms}ms)",
+        watch_roots.len()
+    );
+    while let Ok(event) = rx.recv() {
+        match event {
+            Ok(events) if relevant_events(&events) => {
+                if let Err(error) = ensure_editable_built(&project_dir, &python) {
+                    eprintln!("mohaus watch: rebuild failed: {error}");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("mohaus watch: watcher error: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn watch_roots(project_dir: &Path, config: &ProjectConfig) -> Vec<PathBuf> {
+    let mut roots = vec![config.mojo_source_root(), config.python_source_root()];
+    for include in &config.mojo_include_paths {
+        roots.push(project_dir.join(include));
+    }
+    roots
+}
+
+fn relevant_events(events: &[notify_debouncer_mini::DebouncedEvent]) -> bool {
+    events.iter().any(|event| {
+        event
+            .path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|ext| matches!(ext, "mojo" | "🔥" | "mojopkg" | "py"))
+    })
 }
 
 fn should_disable_isolation(config: &ProjectConfig) -> bool {
@@ -383,19 +436,6 @@ fn os_string_error(error: OsString) -> anyhow::Error {
 
 fn os_string_lossy(value: OsString) -> String {
     value.to_string_lossy().to_string()
-}
-
-#[allow(dead_code)]
-fn _build_editable_for_tests(
-    project_dir: PathBuf,
-    out_dir: PathBuf,
-    python: PythonInfo,
-) -> Result<PathBuf> {
-    Ok(build_editable_wheel(&EditableOptions {
-        project_dir,
-        out_dir,
-        python,
-    })?)
 }
 
 #[cfg(test)]
