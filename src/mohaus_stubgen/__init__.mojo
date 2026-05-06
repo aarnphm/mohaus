@@ -61,8 +61,21 @@ def parse_binding_source(source: String) raises -> ParsedSource:
     return ParsedSource(defs^, _parse_binding_calls(binding_source))
 
 
+def parse_binding_sources(entry_source: String, extra_sources: List[String]) raises -> ParsedSource:
+    var parsed = parse_binding_source(entry_source)
+    for source in extra_sources:
+        var extra = parse_binding_source(String(source))
+        for mojo_def in extra.defs:
+            parsed.defs.append(String(mojo_def))
+    return parsed^
+
+
 def render_stub_text(source: String) raises -> String:
     return render_parsed_stub(parse_binding_source(source))
+
+
+def render_stub_text_with_sources(entry_source: String, extra_sources: List[String]) raises -> String:
+    return render_parsed_stub(parse_binding_sources(entry_source, extra_sources))
 
 
 def render_parsed_stub(parsed: ParsedSource) raises -> String:
@@ -209,7 +222,7 @@ def _parse_def_header(header: String) raises -> String:
     var open = _find_top_level_byte(rest, UInt8(40))
     if open < 0:
         raise Error("def header has no parameter list: ", header)
-    var name = _clean_identifier(String(_slice(rest, 0, open).strip()))
+    var name = _clean_identifier(_strip_generic_params(String(_slice(rest, 0, open).strip())))
     var close = _matching_delimiter(rest, open, UInt8(40), UInt8(41))
     if close < 0:
         raise Error("def `", name, "` has an unterminated parameter list")
@@ -222,6 +235,13 @@ def _parse_def_header(header: String) raises -> String:
         return_type = String(_slice(suffix, arrow + 2, suffix.byte_length()).strip())
         has_return = return_type.byte_length() > 0
     return _def_record(name, params, return_type, has_return)
+
+
+def _strip_generic_params(raw_name: String) -> String:
+    var bracket = _find_top_level_byte(raw_name, UInt8(91))
+    if bracket >= 0:
+        return String(_slice(raw_name, 0, bracket).strip())
+    return raw_name
 
 
 def _parse_params(params: String) raises -> String:

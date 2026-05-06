@@ -66,7 +66,15 @@ struct StubClass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedSource {
     defs: BTreeMap<String, MojoDef>,
+    imports: BTreeMap<String, String>,
     calls: Vec<BindingCall>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StubSource {
+    module_name: Option<String>,
+    text: String,
+    is_entry: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,16 +170,13 @@ pub fn write_module_stub_for_extension(
 /// any exported binding references an unsupported or unresolved declaration.
 pub fn render_module_stub(config: &ProjectConfig, module: &MojoModule) -> Result<String> {
     let entry = config.project_dir.join(&module.entry);
-    let source = fs::read_to_string(&entry).map_err(|source| MohausError::ReadFile {
-        path: entry.clone(),
-        source,
-    })?;
-    render_stub_from_source(&source)
+    let sources = read_stub_sources(config, &entry)?;
+    render_stub_from_sources(&sources)
         .map_err(|message| invalid_stub_source(&entry, module.name.as_str(), message))
 }
 
-fn render_stub_from_source(source: &str) -> std::result::Result<String, String> {
-    let parsed = parse_source(source)?;
+fn render_stub_from_sources(sources: &[StubSource]) -> std::result::Result<String, String> {
+    let parsed = parse_sources(sources)?;
     let bindings = resolve_bindings(&parsed)?;
     Ok(render_stub_text(&bindings))
 }
@@ -189,9 +194,149 @@ fn invalid_stub_source(path: &Path, module_name: &str, message: String) -> Mohau
     }
 }
 
-fn parse_source(source: &str) -> std::result::Result<ParsedSource, String> {
+fn read_stub_sources(config: &ProjectConfig, entry: &Path) -> Result<Vec<StubSource>> {
+    let mut source_paths = Vec::new();
+    let mojo_source_root = config.mojo_source_root();
+    collect_mojo_source_files(&mojo_source_root, &mut source_paths)?;
+    for include in &config.mojo_include_paths {
+        let include_root = if include.is_absolute() {
+            include.clone()
+        } else {
+            config.project_dir.join(include)
+        };
+        collect_mojo_source_files(&include_root, &mut source_paths)?;
+    }
+    source_paths.sort();
+    source_paths.dedup();
+
+    if !source_paths.iter().any(|path| path == entry) {
+        source_paths.push(entry.to_path_buf());
+    }
+
+    let mut sources = Vec::new();
+    for path in source_paths {
+        let text = fs::read_to_string(&path).map_err(|source| MohausError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        sources.push(StubSource {
+            module_name: module_name_for_source(&mojo_source_root, &path),
+            text,
+            is_entry: path == entry,
+        });
+    }
+    Ok(sources)
+}
+
+fn collect_mojo_source_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    match fs::metadata(root) {
+        Ok(metadata) if metadata.is_file() => {
+            if is_mojo_source(root) {
+                out.push(root.to_path_buf());
+            }
+            Ok(())
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            collect_mojo_source_dir(root, out)?;
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(MohausError::ReadFile {
+            path: root.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn collect_mojo_source_dir(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let entries = fs::read_dir(root).map_err(|source| MohausError::ReadFile {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| MohausError::ReadFile {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| MohausError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        if file_type.is_dir() {
+            collect_mojo_source_dir(&path, out)?;
+        } else if file_type.is_file() && is_mojo_source(&path) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_mojo_source(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "mojo" | "🔥"))
+}
+
+fn module_name_for_source(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut parts = relative
+        .iter()
+        .map(|part| part.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let last = parts.last_mut()?;
+    if let Some(stem) = Path::new(last.as_str()).file_stem() {
+        *last = stem.to_string_lossy().to_string();
+    }
+    let module = parts
+        .into_iter()
+        .filter(|part| part != "__init__")
+        .collect::<Vec<_>>()
+        .join(".");
+    (!module.is_empty()).then_some(module)
+}
+
+fn parse_sources(sources: &[StubSource]) -> std::result::Result<ParsedSource, String> {
+    let mut defs = BTreeMap::new();
+    let mut imports = BTreeMap::new();
+    let mut calls = Vec::new();
+    let mut saw_entry = false;
+
+    for source in sources {
+        let parsed =
+            parse_source_unit(&source.text, source.module_name.as_deref(), source.is_entry)?;
+        defs.extend(parsed.defs);
+        if source.is_entry {
+            saw_entry = true;
+            imports.extend(parsed.imports);
+            calls.extend(parsed.calls);
+        }
+    }
+
+    if !saw_entry {
+        return Err("no Mojo module entry source was available for stub generation".to_string());
+    }
+
+    Ok(ParsedSource {
+        defs,
+        imports,
+        calls,
+    })
+}
+
+fn parse_source_unit(
+    source: &str,
+    module_name: Option<&str>,
+    collect_exports: bool,
+) -> std::result::Result<ParsedSource, String> {
     let lines = source.lines().collect::<Vec<_>>();
     let mut defs = BTreeMap::new();
+    let imports = if collect_exports {
+        parse_imports(source)?
+    } else {
+        BTreeMap::new()
+    };
     let mut binding_source = String::new();
     let mut structs: Vec<(usize, String)> = Vec::new();
     let mut index = 0;
@@ -217,21 +362,132 @@ fn parse_source(source: &str) -> std::result::Result<ParsedSource, String> {
             let (header, consumed) = collect_def_header(&lines, index)?;
             let mojo_def = parse_def_header(&header)?;
             let struct_name = structs.last().map(|(_, name)| name.clone());
-            defs.insert(mojo_def.name.clone(), mojo_def.def.clone());
+            insert_def(&mut defs, module_name, None, &mojo_def, collect_exports);
             if let Some(struct_name) = struct_name {
-                defs.insert(format!("{struct_name}.{}", mojo_def.name), mojo_def.def);
+                insert_def(
+                    &mut defs,
+                    module_name,
+                    Some(&struct_name),
+                    &mojo_def,
+                    collect_exports,
+                );
             }
             index = consumed;
             continue;
         }
 
-        binding_source.push_str(line);
-        binding_source.push('\n');
+        if collect_exports {
+            binding_source.push_str(line);
+            binding_source.push('\n');
+        }
         index += 1;
     }
 
-    let calls = parse_binding_calls(&binding_source)?;
-    Ok(ParsedSource { defs, calls })
+    let calls = if collect_exports {
+        parse_binding_calls(&binding_source)?
+    } else {
+        Vec::new()
+    };
+    Ok(ParsedSource {
+        defs,
+        imports,
+        calls,
+    })
+}
+
+fn insert_def(
+    defs: &mut BTreeMap<String, MojoDef>,
+    module_name: Option<&str>,
+    struct_name: Option<&str>,
+    mojo_def: &NamedDef,
+    is_entry: bool,
+) {
+    let local_name = struct_name.map_or_else(
+        || mojo_def.name.clone(),
+        |struct_name| format!("{struct_name}.{}", mojo_def.name),
+    );
+    if is_entry || struct_name.is_some() || module_name.is_none() {
+        defs.insert(local_name.clone(), mojo_def.def.clone());
+    }
+    if let Some(module_name) = module_name {
+        defs.insert(format!("{module_name}.{local_name}"), mojo_def.def.clone());
+    }
+}
+
+fn parse_imports(source: &str) -> std::result::Result<BTreeMap<String, String>, String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut imports = BTreeMap::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = strip_comment(lines[index]).trim();
+        let Some(rest) = trimmed.strip_prefix("from ") else {
+            index += 1;
+            continue;
+        };
+        let Some((module, raw_names)) = rest.split_once(" import ") else {
+            index += 1;
+            continue;
+        };
+
+        let mut names = raw_names.trim().to_string();
+        if names.starts_with('(') && matching_delimiter(&names, 0, '(', ')').is_none() {
+            let start = index + 1;
+            index = start;
+            while index < lines.len() {
+                names.push(' ');
+                names.push_str(strip_comment(lines[index]).trim());
+                if matching_delimiter(&names, 0, '(', ')').is_some() {
+                    break;
+                }
+                index += 1;
+            }
+            if index == lines.len() {
+                return Err(format!(
+                    "unterminated import list starting at line {}",
+                    start
+                ));
+            }
+        }
+
+        insert_imports(&mut imports, module.trim(), &names);
+        index += 1;
+    }
+    Ok(imports)
+}
+
+fn insert_imports(imports: &mut BTreeMap<String, String>, module: &str, raw_names: &str) {
+    let names = raw_names
+        .trim()
+        .strip_prefix('(')
+        .unwrap_or(raw_names.trim())
+        .trim()
+        .strip_suffix(')')
+        .unwrap_or_else(|| {
+            raw_names
+                .trim()
+                .strip_prefix('(')
+                .unwrap_or(raw_names.trim())
+                .trim()
+        })
+        .trim();
+    for item in split_top_level_commas(names) {
+        let item = item.trim();
+        if item.is_empty() || item == "*" {
+            continue;
+        }
+        let parts = item.split_whitespace().collect::<Vec<_>>();
+        let Some(original) = parts.first() else {
+            continue;
+        };
+        let alias = if parts.len() >= 3 && parts[1] == "as" {
+            parts[2]
+        } else {
+            original
+        };
+        if valid_python_identifier(alias) && valid_python_identifier(original) {
+            imports.insert(alias.to_string(), format!("{module}.{original}"));
+        }
+    }
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -313,7 +569,7 @@ fn parse_def_header(header: &str) -> std::result::Result<NamedDef, String> {
     let open = find_top_level_char(rest, '(')
         .ok_or_else(|| format!("def header has no parameter list: {header}"))?;
     let raw_name = rest[..open].trim();
-    let name = clean_identifier(raw_name)?;
+    let name = clean_identifier(strip_generic_params(raw_name))?;
     let close = matching_delimiter(rest, open, '(', ')')
         .ok_or_else(|| format!("def `{name}` has an unterminated parameter list"))?;
     let params_text = &rest[open + 1..close];
@@ -330,6 +586,14 @@ fn parse_def_header(header: &str) -> std::result::Result<NamedDef, String> {
             return_type,
         },
     })
+}
+
+fn strip_generic_params(raw_name: &str) -> &str {
+    if let Some(bracket) = find_top_level_char(raw_name, '[') {
+        raw_name[..bracket].trim_end()
+    } else {
+        raw_name
+    }
 }
 
 fn parse_params(params: &str) -> std::result::Result<Vec<MojoParam>, String> {
@@ -719,12 +983,20 @@ fn resolve_def<'a>(
     target: &str,
 ) -> std::result::Result<&'a MojoDef, String> {
     let target = target.trim();
-    let direct = parsed.defs.get(target);
+    if let Some(direct) = parsed.defs.get(target) {
+        return Ok(direct);
+    }
+    if !target.contains('.')
+        && let Some(imported_target) = parsed.imports.get(target)
+        && let Some(imported) = parsed.defs.get(imported_target)
+    {
+        return Ok(imported);
+    }
     let leaf = target
         .rsplit('.')
         .next()
         .and_then(|name| parsed.defs.get(name));
-    direct.or(leaf).ok_or_else(|| {
+    leaf.ok_or_else(|| {
         format!("exported binding target `{target}` does not resolve to a local Mojo `def`")
     })
 }
@@ -979,8 +1251,16 @@ mod tests {
 
     use crate::config::ProjectConfig;
     use crate::stub::{
-        module_stub_plan_for_extension, render_module_stub, render_stub_from_source,
+        StubSource, module_stub_plan_for_extension, render_module_stub, render_stub_from_sources,
     };
+
+    fn render_stub_from_source(source: &str) -> std::result::Result<String, String> {
+        render_stub_from_sources(&[StubSource {
+            module_name: None,
+            text: source.to_string(),
+            is_entry: true,
+        }])
+    }
 
     #[test]
     fn renders_function_and_class_bindings() {
@@ -1143,6 +1423,28 @@ def PyInit__native() -> PythonObject:
     }
 
     #[test]
+    fn parses_generic_def_headers_without_treating_brackets_as_names() {
+        let text = render_stub_from_source(
+            r#"
+from std.python import PythonObject
+from std.python.bindings import PythonModuleBuilder
+
+def passthrough[T: CollectionElement](value: PythonObject) raises -> PythonObject:
+    return value
+
+@export
+def PyInit__native() -> PythonObject:
+    var module = PythonModuleBuilder("_native")
+    module.def_function[passthrough]("passthrough")
+    return module.finalize()
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(text, "def passthrough(value: object) -> object: ...\n");
+    }
+
+    #[test]
     fn unresolved_binding_target_is_an_error() {
         let error = render_stub_from_source(
             r#"
@@ -1230,5 +1532,79 @@ def PyInit__native() -> PythonObject:
 
         assert!(error.to_string().contains("demo._native"));
         assert!(error.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn resolves_binding_targets_from_source_root_modules() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::create_dir_all(temp.path().join("python/demo")).unwrap();
+        fs::write(temp.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        fs::write(
+            temp.path().join("pyproject.toml"),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/lib.mojo"),
+            r#"
+from std.python import PythonObject
+from std.python.bindings import PythonModuleBuilder
+
+from array import Array
+from create import (
+    imported_fun as aliased_fun,
+)
+
+@export
+def PyInit__native() -> PythonObject:
+    var module = PythonModuleBuilder("_native")
+    _ = module.add_type[Array]("Array").def_method[Array.dtype_code_py]("dtype_code")
+    module.def_function[aliased_fun]("aliased_fun")
+    return module.finalize()
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/array.mojo"),
+            r#"
+from std.python import PythonObject
+
+struct Array(Movable, Writable):
+    @staticmethod
+    def dtype_code_py(py_self: PythonObject) raises -> PythonObject:
+        return PythonObject(1)
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/create.mojo"),
+            r#"
+from std.python import PythonObject
+
+def imported_fun(value: PythonObject) raises -> PythonObject:
+    return value
+"#,
+        )
+        .unwrap();
+
+        let config = ProjectConfig::load(temp.path()).unwrap();
+        let text = render_module_stub(&config, &config.modules[0]).unwrap();
+
+        assert_eq!(
+            text,
+            concat!(
+                "def aliased_fun(value: object) -> object: ...\n\n",
+                "class Array:\n",
+                "  def dtype_code(self) -> object: ...\n",
+            )
+        );
     }
 }

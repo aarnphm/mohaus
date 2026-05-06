@@ -1,7 +1,8 @@
 # Parity tests for mohaus_stubgen. The fixture shape mirrors the Rust tests in
 # `crates/mohaus-core/src/stub.rs`; the runtime path stays Rust-owned.
 
-from mohaus_stubgen import parse_binding_source, render_stub_text
+from mohaus_stubgen import parse_binding_source, render_stub_text, render_stub_text_with_sources
+from std.collections import List
 from std.testing import assert_equal
 
 
@@ -141,8 +142,58 @@ def test_chained_builder_calls_can_span_lines() raises:
     )
 
 
+def test_source_root_defs_feed_entry_bindings() raises:
+    var entry_source = (
+        "from std.python import PythonObject\n"
+        + "from std.python.bindings import PythonModuleBuilder\n"
+        + "from array import Array\n"
+        + "\n"
+        + "@export\n"
+        + "def PyInit__native() -> PythonObject:\n"
+        + '    var module = PythonModuleBuilder("_native")\n'
+        + '    _ = module.add_type[Array]("Array").def_method[Array.dtype_code_py]("dtype_code")\n'
+        + "    return module.finalize()\n"
+    )
+    var array_source = (
+        "from std.python import PythonObject\n"
+        + "\n"
+        + "struct Array(Movable, Writable):\n"
+        + "    @staticmethod\n"
+        + "    def dtype_code_py(py_self: PythonObject) raises -> PythonObject:\n"
+        + "        return PythonObject(1)\n"
+    )
+    var sources = List[String]()
+    sources.append(array_source)
+    assert_equal(
+        render_stub_text_with_sources(entry_source, sources),
+        "class Array:\n  def dtype_code(self) -> object: ...\n",
+    )
+
+
+def test_generic_def_headers_keep_base_name() raises:
+    var source = (
+        "from std.python import PythonObject\n"
+        + "from std.python.bindings import PythonModuleBuilder\n"
+        + "\n"
+        + "def passthrough[T: CollectionElement](value: PythonObject) raises -> PythonObject:\n"
+        + "    return value\n"
+        + "\n"
+        + "@export\n"
+        + "def PyInit__native() -> PythonObject:\n"
+        + '    var module = PythonModuleBuilder("_native")\n'
+        + '    module.def_function[passthrough]("passthrough")\n'
+        + "    return module.finalize()\n"
+    )
+    assert_equal(
+        render_stub_text(source),
+        "def passthrough(value: object) -> object: ...\n",
+    )
+
+
 def main() raises:
     test_scaffold_style_binding_stub()
     test_keyword_static_and_default_init_stub()
     test_low_level_bindings_stay_broad()
     test_chained_builder_calls_can_span_lines()
+    test_source_root_defs_feed_entry_bindings()
+    test_generic_def_headers_keep_base_name()
