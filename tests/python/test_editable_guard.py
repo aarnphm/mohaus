@@ -18,7 +18,8 @@ def test_editable_hook_skips_recursive_rebuild(monkeypatch: pytest.MonkeyPatch) 
   editable.ensure("/tmp/project")
 
 
-def test_editable_hook_marks_child_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_editable_hook_marks_child_processes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+  (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
   seen: list[str | None] = []
 
   def record_rebuild(_project_root: str) -> None:
@@ -27,15 +28,28 @@ def test_editable_hook_marks_child_processes(monkeypatch: pytest.MonkeyPatch) ->
   monkeypatch.delenv("MOHAUS_EDITABLE_REBUILDING", raising=False)
   monkeypatch.setattr(editable, "rebuild_editable", record_rebuild)
 
-  editable.ensure("/tmp/project")
+  editable.ensure(str(tmp_path))
 
   assert seen == ["1"]
   assert "MOHAUS_EDITABLE_REBUILDING" not in os.environ
 
 
+def test_editable_hook_skips_missing_project_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+  missing = tmp_path / "deleted-project"
+
+  def fail_rebuild(_project_root: str) -> None:
+    raise AssertionError("stale editable pth should be ignored")
+
+  monkeypatch.delenv("MOHAUS_EDITABLE_REBUILDING", raising=False)
+  monkeypatch.setattr(editable, "rebuild_editable", fail_rebuild)
+
+  editable.ensure(str(missing))
+
+
 def test_editable_hook_short_circuits_when_signature_unchanged(
   monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+  (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
   hash_dir = tmp_path / ".mohaus"
   hash_dir.mkdir()
   (hash_dir / "demo.hash").write_text("abc")
@@ -57,6 +71,7 @@ def test_editable_hook_short_circuits_when_signature_unchanged(
 
 
 def test_editable_hook_force_env_disables_short_circuit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+  (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
   hash_dir = tmp_path / ".mohaus"
   hash_dir.mkdir()
   (hash_dir / "demo.hash").write_text("abc")

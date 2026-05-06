@@ -8,8 +8,11 @@ use walkdir::WalkDir;
 
 use crate::config::{MojoModule, ProjectConfig};
 use crate::error::{MohausError, Result};
+use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
-use crate::toolchain::{resolve_verified_mojo, run_command_with_env_remove};
+use crate::toolchain::{
+    resolve_verified_mojo_with_verbosity, run_command_with_env_remove_with_verbosity,
+};
 use crate::wheel::write_file;
 
 #[cfg(target_os = "macos")]
@@ -65,14 +68,53 @@ pub struct MojoRuntimeLibs {
 /// Returns an error when configuration loading, Mojo resolution, source hashing,
 /// compilation, or sidecar writing fails.
 pub fn ensure_editable_built(project_dir: impl AsRef<Path>, python: &PythonInfo) -> Result<()> {
+    ensure_editable_built_with_verbosity(project_dir, python, Verbosity::default())
+}
+
+/// Ensure editable in-place extensions are built with human-facing diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when configuration loading, Mojo resolution, source hashing,
+/// compilation, or sidecar writing fails.
+pub fn ensure_editable_built_with_verbosity(
+    project_dir: impl AsRef<Path>,
+    python: &PythonInfo,
+    verbosity: Verbosity,
+) -> Result<()> {
     let config = ProjectConfig::load(project_dir.as_ref())?;
     let plan = plan_rebuilds(&config, python)?;
     if plan.is_empty() {
+        debug(verbosity, 2, || {
+            format!(
+                "editable outputs for {} are already fresh",
+                config.package.as_str()
+            )
+        });
         return Ok(());
     }
+    debug(verbosity, 1, || {
+        format!(
+            "editable rebuild needs {} module(s) for {}",
+            plan.len(),
+            config.package.as_str()
+        )
+    });
     let _guard = acquire_rebuild_lock(&config)?;
+    debug(verbosity, 2, || {
+        format!(
+            "acquired editable rebuild lock in {}",
+            config.project_dir.display()
+        )
+    });
     let plan = plan_rebuilds(&config, python)?;
     if plan.is_empty() {
+        debug(verbosity, 2, || {
+            format!(
+                "editable outputs for {} became fresh while waiting for the lock",
+                config.package.as_str()
+            )
+        });
         return Ok(());
     }
     let pinned = config
@@ -81,15 +123,26 @@ pub fn ensure_editable_built(project_dir: impl AsRef<Path>, python: &PythonInfo)
         .ok_or_else(|| MohausError::InvalidProject {
             message: ".mojo-version is required for editable builds with Mojo modules".to_string(),
         })?;
-    let mojo = resolve_verified_mojo(pinned)?;
+    let mojo = resolve_verified_mojo_with_verbosity(pinned, verbosity)?;
     for stale in plan {
-        compile_module(
+        debug(verbosity, 1, || {
+            format!(
+                "rebuilding editable Mojo module {} -> {}",
+                stale.module.name.as_str(),
+                stale.extension_path.display()
+            )
+        });
+        compile_module_with_verbosity(
             &config,
             &stale.module,
             &stale.extension_path,
             &mojo.executable,
+            verbosity,
         )?;
         write_file(&stale.hash_path, stale.expected_hash.as_bytes())?;
+        debug(verbosity, 3, || {
+            format!("wrote editable source hash {}", stale.hash_path.display())
+        });
     }
     Ok(())
 }
@@ -168,22 +221,44 @@ pub fn compile_module(
     output: &Path,
     mojo_executable: &Path,
 ) -> Result<()> {
+    compile_module_with_verbosity(
+        config,
+        module,
+        output,
+        mojo_executable,
+        Verbosity::default(),
+    )
+}
+
+/// Compile a configured Mojo module into a shared library with diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the output directory cannot be created or `mojo build`
+/// fails.
+pub fn compile_module_with_verbosity(
+    config: &ProjectConfig,
+    module: &MojoModule,
+    output: &Path,
+    mojo_executable: &Path,
+    verbosity: Verbosity,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|source| MohausError::CreateDir {
             path: parent.to_path_buf(),
             source,
         })?;
     }
-    let runtime = discover_mojo_runtime_libs(mojo_executable)?;
+    let runtime = discover_mojo_runtime_libs_with_verbosity(mojo_executable, verbosity)?;
     let args = build_mojo_args(config, module, output, runtime.as_ref());
     let env_remove = if runtime.is_some() {
         PYTHON_PACKAGE_MOJO_ENV_REMOVE
     } else {
         &[]
     };
-    run_command_with_env_remove(mojo_executable, &args, env_remove)?;
+    run_command_with_env_remove_with_verbosity(mojo_executable, &args, env_remove, verbosity)?;
     if let Some(runtime) = &runtime {
-        copy_mojo_runtime_libs(runtime, output)?;
+        copy_mojo_runtime_libs(runtime, output, verbosity)?;
     }
     Ok(())
 }
@@ -227,7 +302,11 @@ fn add_mojo_runtime_link_args(args: &mut Vec<OsString>, runtime: &MojoRuntimeLib
     args.push(OsString::from(MOJO_LOADER_RPATH));
 }
 
-fn copy_mojo_runtime_libs(runtime: &MojoRuntimeLibs, output: &Path) -> Result<()> {
+fn copy_mojo_runtime_libs(
+    runtime: &MojoRuntimeLibs,
+    output: &Path,
+    verbosity: Verbosity,
+) -> Result<()> {
     let Some(output_dir) = output.parent() else {
         return Err(MohausError::InvalidProject {
             message: format!(
@@ -246,24 +325,55 @@ fn copy_mojo_runtime_libs(runtime: &MojoRuntimeLibs, output: &Path) -> Result<()
             });
         };
         let destination = output_dir.join(file_name);
+        let destination_for_error = destination.clone();
         fs::copy(lib, &destination).map_err(|source| MohausError::CopyFile {
             source_path: lib.clone(),
-            dest_path: destination,
+            dest_path: destination_for_error,
             source,
         })?;
+        debug(verbosity, 3, || {
+            format!(
+                "copied Mojo runtime lib {} -> {}",
+                lib.display(),
+                destination.display()
+            )
+        });
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn discover_mojo_runtime_libs(mojo_executable: &Path) -> Result<Option<MojoRuntimeLibs>> {
+    discover_mojo_runtime_libs_with_verbosity(mojo_executable, Verbosity::default())
+}
+
+fn discover_mojo_runtime_libs_with_verbosity(
+    mojo_executable: &Path,
+    verbosity: Verbosity,
+) -> Result<Option<MojoRuntimeLibs>> {
     let Some(bin_dir) = mojo_executable.parent() else {
+        debug(verbosity, 3, || {
+            format!(
+                "Mojo executable has no parent: {}",
+                mojo_executable.display()
+            )
+        });
         return Ok(None);
     };
     let Some(root) = bin_dir.parent() else {
+        debug(verbosity, 3, || {
+            format!(
+                "Mojo executable has no toolchain root: {}",
+                mojo_executable.display()
+            )
+        });
         return Ok(None);
     };
     let lib_root = root.join("lib");
     if !lib_root.is_dir() {
+        debug(verbosity, 3, || {
+            format!("Mojo runtime lib root is absent: {}", lib_root.display())
+        });
         return Ok(None);
     }
 
@@ -276,9 +386,15 @@ fn discover_mojo_runtime_libs(mojo_executable: &Path) -> Result<Option<MojoRunti
             && entry.path().ends_with("modular/lib")
             && let Some(runtime) = runtime_libs_from_dir(entry.path())?
         {
+            debug(verbosity, 2, || {
+                format!("found Mojo runtime libs in {}", runtime.lib_dir.display())
+            });
             return Ok(Some(runtime));
         }
     }
+    debug(verbosity, 3, || {
+        format!("no Mojo runtime libs found under {}", lib_root.display())
+    });
     Ok(None)
 }
 

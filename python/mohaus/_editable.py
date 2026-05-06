@@ -15,6 +15,8 @@ _DISABLE_SHORT_CIRCUIT_ENV = "MOHAUS_EDITABLE_FORCE"
 
 
 def ensure(project_root: str) -> None:
+  if not _project_root_available(project_root):
+    return
   if os.environ.get(_REBUILDING_ENV):
     return
   if not os.environ.get(_DISABLE_SHORT_CIRCUIT_ENV) and _per_process_short_circuit(project_root):
@@ -30,6 +32,14 @@ def ensure(project_root: str) -> None:
       os.environ.pop(_REBUILDING_ENV, None)
     else:
       os.environ[_REBUILDING_ENV] = previous
+
+
+def _project_root_available(project_root: str) -> bool:
+  root = Path(project_root)
+  try:
+    return root.is_dir() and (root / "pyproject.toml").is_file()
+  except OSError:
+    return False
 
 
 def _per_process_short_circuit(project_root: str) -> bool:

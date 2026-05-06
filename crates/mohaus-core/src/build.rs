@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use crate::config::ProjectConfig;
-use crate::editable::{compile_module, ensure_editable_built};
+use crate::editable::{compile_module_with_verbosity, ensure_editable_built_with_verbosity};
 use crate::error::{MohausError, Result};
+use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
 use crate::sdist::write_sdist_archive;
-use crate::toolchain::resolve_verified_mojo;
+use crate::toolchain::resolve_verified_mojo_with_verbosity;
 use crate::wheel::{
     copy_dir, copy_prepared_dist_info, write_dist_info, write_file, write_wheel_archive,
 };
@@ -19,6 +20,7 @@ pub struct BuildOptions {
     pub out_dir: PathBuf,
     pub python: PythonInfo,
     pub release: bool,
+    pub verbosity: Verbosity,
     /// PEP 517 `metadata_directory` previously populated by
     /// `prepare_metadata_for_build_wheel`. When present, mohaus reuses the
     /// dist-info contents instead of regenerating them, satisfying the
@@ -32,6 +34,7 @@ pub struct EditableOptions {
     pub project_dir: PathBuf,
     pub out_dir: PathBuf,
     pub python: PythonInfo,
+    pub verbosity: Verbosity,
     /// PEP 660 `metadata_directory` previously populated by
     /// `prepare_metadata_for_build_editable`.
     pub metadata_dir: Option<PathBuf>,
@@ -50,6 +53,7 @@ pub struct MetadataOptions {
     pub project_dir: PathBuf,
     pub metadata_dir: PathBuf,
     pub python: PythonInfo,
+    pub verbosity: Verbosity,
 }
 
 /// Build a host wheel for a mohaus project.
@@ -60,18 +64,42 @@ pub struct MetadataOptions {
 /// metadata generation, or wheel writing fails.
 pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
     let config = ProjectConfig::load(&options.project_dir)?;
+    debug(options.verbosity, 1, || {
+        format!(
+            "building wheel for {} {} from {}",
+            config.package.as_str(),
+            config.version,
+            config.project_dir.display()
+        )
+    });
+    debug(options.verbosity, 2, || {
+        format!(
+            "python wheel tags: pure={}, platform={}",
+            options.python.pure_tag, options.python.wheel_tag
+        )
+    });
     let staged = TempDir::new().map_err(|source| MohausError::CreateDir {
         path: options.project_dir.join("target/mohaus-staged"),
         source,
     })?;
+    debug(options.verbosity, 2, || {
+        format!("staging wheel tree in {}", staged.path().display())
+    });
 
     stage_python_tree(&config, staged.path())?;
     if !config.modules.is_empty() {
-        let mojo = resolve_module_toolchain(&config)?;
+        let mojo = resolve_module_toolchain(&config, options.verbosity)?;
         for module in &config.modules {
             let output =
                 extension_output_path_in_root(staged.path(), module, &options.python.ext_suffix);
-            compile_module(&config, module, &output, &mojo)?;
+            debug(options.verbosity, 1, || {
+                format!(
+                    "compiling Mojo module {} -> {}",
+                    module.name.as_str(),
+                    output.display()
+                )
+            });
+            compile_module_with_verbosity(&config, module, &output, &mojo, options.verbosity)?;
         }
     }
 
@@ -96,17 +124,20 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
     );
     let wheel_path = options.out_dir.join(wheel_name);
     write_wheel_archive(staged.path(), &wheel_path, &config.dist_info_dir())?;
+    debug(options.verbosity, 1, || {
+        format!("wrote wheel {}", wheel_path.display())
+    });
     Ok(wheel_path)
 }
 
-fn resolve_module_toolchain(config: &ProjectConfig) -> Result<PathBuf> {
+fn resolve_module_toolchain(config: &ProjectConfig, verbosity: Verbosity) -> Result<PathBuf> {
     let pinned = config
         .mojo_version
         .as_ref()
         .ok_or_else(|| MohausError::InvalidProject {
             message: ".mojo-version is required to compile Mojo modules".to_string(),
         })?;
-    Ok(resolve_verified_mojo(pinned)?.executable)
+    Ok(resolve_verified_mojo_with_verbosity(pinned, verbosity)?.executable)
 }
 
 /// Build a PEP 660 editable wheel.
@@ -117,13 +148,28 @@ fn resolve_module_toolchain(config: &ProjectConfig) -> Result<PathBuf> {
 /// metadata generation, or wheel writing fails.
 pub fn build_editable_wheel(options: &EditableOptions) -> Result<PathBuf> {
     let config = ProjectConfig::load(&options.project_dir)?;
+    debug(options.verbosity, 1, || {
+        format!(
+            "building editable wheel for {} {} from {}",
+            config.package.as_str(),
+            config.version,
+            config.project_dir.display()
+        )
+    });
     if !config.modules.is_empty() {
-        ensure_editable_built(&options.project_dir, &options.python)?;
+        ensure_editable_built_with_verbosity(
+            &options.project_dir,
+            &options.python,
+            options.verbosity,
+        )?;
     }
     let staged = TempDir::new().map_err(|source| MohausError::CreateDir {
         path: options.project_dir.join("target/mohaus-editable-staged"),
         source,
     })?;
+    debug(options.verbosity, 2, || {
+        format!("staging editable wheel tree in {}", staged.path().display())
+    });
     let pth_name = format!("zz_mohaus_{}_editable.pth", config.package.escaped());
     let pth = format!(
         "{}\nimport importlib, importlib.util; spec = importlib.util.find_spec('mohaus._editable'); spec and importlib.import_module('mohaus._editable').ensure({})\n",
@@ -146,6 +192,9 @@ pub fn build_editable_wheel(options: &EditableOptions) -> Result<PathBuf> {
     );
     let wheel_path = options.out_dir.join(wheel_name);
     write_wheel_archive(staged.path(), &wheel_path, &config.dist_info_dir())?;
+    debug(options.verbosity, 1, || {
+        format!("wrote editable wheel {}", wheel_path.display())
+    });
     Ok(wheel_path)
 }
 
@@ -166,6 +215,13 @@ pub fn build_sdist(options: &SdistOptions) -> Result<PathBuf> {
 /// Returns an error when configuration loading or dist-info writing fails.
 pub fn prepare_metadata_for_build_wheel(options: &MetadataOptions) -> Result<String> {
     let config = ProjectConfig::load(&options.project_dir)?;
+    debug(options.verbosity, 1, || {
+        format!(
+            "preparing wheel metadata for {} in {}",
+            config.package.as_str(),
+            options.metadata_dir.display()
+        )
+    });
     let dist_info = write_dist_info(
         &options.metadata_dir,
         &config,
@@ -183,6 +239,13 @@ pub fn prepare_metadata_for_build_wheel(options: &MetadataOptions) -> Result<Str
 /// Returns an error when configuration loading or dist-info writing fails.
 pub fn prepare_metadata_for_build_editable(options: &MetadataOptions) -> Result<String> {
     let config = ProjectConfig::load(&options.project_dir)?;
+    debug(options.verbosity, 1, || {
+        format!(
+            "preparing editable metadata for {} in {}",
+            config.package.as_str(),
+            options.metadata_dir.display()
+        )
+    });
     let dist_info = write_dist_info(
         &options.metadata_dir,
         &config,

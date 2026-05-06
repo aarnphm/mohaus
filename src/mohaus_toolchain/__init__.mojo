@@ -9,8 +9,9 @@
 # diff stays small. When the cutover happens, `mohaus-pep517` calls into this
 # module instead of `mohaus-core::toolchain`.
 
+from std.collections import List
 from std.os import getenv
-from std.os.path import exists
+from std.os.path import exists, realpath
 from std.pathlib import Path
 from std.subprocess import run as subprocess_run
 
@@ -33,9 +34,33 @@ def resolve_mojo_executable() raises -> String:
     Raises:
         Error if no executable is found.
     """
+    var candidates = _mojo_candidates()
+    if len(candidates) > 0:
+        return candidates[0]
+
+    raise Error("could not find a Mojo executable; searched $MOHAUS_MOJO, $PATH, and $MODULAR_HOME/bin/mojo")
+
+
+def _mojo_override_candidate() -> String:
     var override_path = getenv(MOHAUS_MOJO_ENV)
     if override_path.byte_length() > 0 and exists(override_path):
-        return override_path
+        return _normalize_mojo_candidate(override_path)
+    return String("")
+
+
+def _mojo_candidates() -> List[String]:
+    var candidates = List[String]()
+    var override_path = _mojo_override_candidate()
+    if override_path.byte_length() > 0:
+        _push_unique_candidate(candidates, override_path)
+    var rest = _path_and_modular_home_candidates()
+    for candidate in rest:
+        _push_unique_candidate(candidates, String(candidate))
+    return candidates
+
+
+def _path_and_modular_home_candidates() -> List[String]:
+    var candidates = List[String]()
 
     var path_value = getenv(PATH_ENV)
     if path_value.byte_length() > 0:
@@ -45,15 +70,29 @@ def resolve_mojo_executable() raises -> String:
                 continue
             var candidate = String(entry) + "/mojo"
             if exists(candidate):
-                return candidate
+                _push_unique_candidate(candidates, _normalize_mojo_candidate(candidate))
 
     var modular_home = getenv(MODULAR_HOME_ENV)
     if modular_home.byte_length() > 0:
         var candidate = modular_home + "/bin/mojo"
         if exists(candidate):
-            return candidate
+            _push_unique_candidate(candidates, _normalize_mojo_candidate(candidate))
 
-    raise Error("could not find a Mojo executable; searched $MOHAUS_MOJO, $PATH, and $MODULAR_HOME/bin/mojo")
+    return candidates
+
+
+def _normalize_mojo_candidate(candidate: String) -> String:
+    try:
+        return realpath(candidate)
+    except:
+        return candidate
+
+
+def _push_unique_candidate(mut candidates: List[String], candidate: String):
+    for existing in candidates:
+        if String(existing) == candidate:
+            return
+    candidates.append(candidate)
 
 
 def probe_mojo_version(executable: String) raises -> String:
@@ -111,21 +150,48 @@ def normalize_mojo_version_token(value: String) -> String:
 
 def resolve_verified_mojo(expected: String) raises -> MojoToolchain:
     """Resolve + probe + match. Raises with the same shape the Rust crate emits."""
-    var executable = resolve_mojo_executable()
+    var expected_normalized = normalize_mojo_version_token(expected)
+    var override_path = _mojo_override_candidate()
+    if override_path.byte_length() > 0:
+        return _verify_mojo_candidate(override_path, expected_normalized)
+    return _resolve_verified_mojo_from_candidates(expected_normalized, _path_and_modular_home_candidates())
+
+
+def _resolve_verified_mojo_from_candidates(expected: String, candidates: List[String]) raises -> MojoToolchain:
+    var first_executable = String("")
+    var first_actual = String("")
+    for candidate in candidates:
+        var executable = String(candidate)
+        var version_output = probe_mojo_version(executable)
+        var actual = normalize_mojo_version_token(version_output)
+        if actual == expected:
+            return MojoToolchain(executable, version_output)
+        if first_executable.byte_length() == 0:
+            first_executable = executable
+            first_actual = actual
+    if first_executable.byte_length() > 0:
+        _raise_mojo_version_mismatch(expected, first_executable, first_actual)
+    raise Error("could not find a Mojo executable; searched $MOHAUS_MOJO, $PATH, and $MODULAR_HOME/bin/mojo")
+
+
+def _verify_mojo_candidate(executable: String, expected: String) raises -> MojoToolchain:
     var version_output = probe_mojo_version(executable)
     var actual = normalize_mojo_version_token(version_output)
-    var expected_normalized = normalize_mojo_version_token(expected)
-    if actual != expected_normalized:
-        raise Error(
-            "Mojo version mismatch: project pins `",
-            expected_normalized,
-            "`, but `",
-            executable,
-            "` reported `",
-            actual,
-            "`",
-        )
+    if actual != expected:
+        _raise_mojo_version_mismatch(expected, executable, actual)
     return MojoToolchain(executable, version_output)
+
+
+def _raise_mojo_version_mismatch(expected: String, executable: String, actual: String) raises:
+    raise Error(
+        "Mojo version mismatch: project pins `",
+        expected,
+        "`, but `",
+        executable,
+        "` reported `",
+        actual,
+        "`",
+    )
 
 
 def _is_alnum(byte: UInt8) -> Bool:

@@ -8,7 +8,7 @@ use std::fs;
 
 use mohaus_core::config::ProjectConfig;
 use mohaus_core::python_info::PythonInfo;
-use mohaus_core::{BuildOptions, build_wheel};
+use mohaus_core::{BuildOptions, Verbosity, build_wheel};
 
 fn fixture(root: &std::path::Path) {
     fs::write(
@@ -71,6 +71,7 @@ fn pure_mode_builds_a_wheel_without_mojo_toolchain() {
         out_dir,
         python,
         release: false,
+        verbosity: Verbosity::default(),
         metadata_dir: None,
     })
     .unwrap();

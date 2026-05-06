@@ -20,6 +20,8 @@ When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
 wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
 first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,
 `$MODULAR_HOME/bin/mojo`, and `--no-build-isolation`.
+Use `-v`, `-vv`, or `-vvv` before or after a subcommand to print mohaus
+diagnostics and forward matching verbosity into uv/pip-backed installs.
 
 ```bash
 mohaus init monpy ~/workspace/monpy

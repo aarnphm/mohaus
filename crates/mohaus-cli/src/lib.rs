@@ -12,11 +12,11 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, anyhow};
-use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use mohaus_core::{
-    BuildOptions, ProjectConfig, PythonInfo, SdistOptions, build_sdist, build_wheel,
-    ensure_editable_built,
+    BuildOptions, ProjectConfig, PythonInfo, SdistOptions, VERBOSITY_ENV, Verbosity, build_sdist,
+    build_wheel, ensure_editable_built_with_verbosity,
 };
 use mohaus_scaffold::{ScaffoldOptions, scaffold_project};
 use notify::RecursiveMode;
@@ -65,6 +65,10 @@ where
     about = "Build mixed Python and Mojo packages"
 )]
 struct Cli {
+    /// Increase diagnostic output. Repeat for more detail, e.g. -vvv.
+    #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: CommandKind,
 }
@@ -159,14 +163,15 @@ enum CommandKind {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let verbosity = Verbosity::new(cli.verbose);
     match cli.command {
-        CommandKind::Init { name, path } => init(name, path),
-        CommandKind::New { name } => new_project(name),
+        CommandKind::Init { name, path } => init(name, path, verbosity),
+        CommandKind::New { name } => new_project(name, verbosity),
         CommandKind::Completions { shell } => completions(shell),
-        CommandKind::Build { release, out } => build(release, out),
-        CommandKind::Develop { no_build_isolation } => develop(no_build_isolation),
-        CommandKind::Sdist { out } => sdist(out),
-        CommandKind::Watch { interval_ms } => watch(interval_ms),
+        CommandKind::Build { release, out } => build(release, out, verbosity),
+        CommandKind::Develop { no_build_isolation } => develop(no_build_isolation, verbosity),
+        CommandKind::Sdist { out } => sdist(out, verbosity),
+        CommandKind::Watch { interval_ms } => watch(interval_ms, verbosity),
         CommandKind::Add {
             spec,
             mojo,
@@ -174,11 +179,19 @@ fn run(cli: Cli) -> Result<()> {
             group,
             build_system,
             passthrough,
-        } => add(spec, mojo, extra, group, build_system, passthrough),
+        } => add(
+            spec,
+            mojo,
+            extra,
+            group,
+            build_system,
+            passthrough,
+            verbosity,
+        ),
     }
 }
 
-fn init(name: Option<String>, path: Option<PathBuf>) -> Result<()> {
+fn init(name: Option<String>, path: Option<PathBuf>, verbosity: Verbosity) -> Result<()> {
     let cwd = env::current_dir().context("could not read current directory")?;
     let (name, destination) = match (name, path) {
         (Some(name), Some(destination)) => (name, destination),
@@ -205,12 +218,21 @@ fn init(name: Option<String>, path: Option<PathBuf>) -> Result<()> {
             (name, destination)
         }
     };
+    log(verbosity, 1, || {
+        format!("scaffolding project {name} into {}", destination.display())
+    });
     scaffold_project(&ScaffoldOptions { name, destination })?;
     Ok(())
 }
 
-fn new_project(name: String) -> Result<()> {
+fn new_project(name: String, verbosity: Verbosity) -> Result<()> {
     let cwd = env::current_dir().context("could not read current directory")?;
+    log(verbosity, 1, || {
+        format!(
+            "scaffolding project {name} into {}",
+            cwd.join(&name).display()
+        )
+    });
     scaffold_project(&ScaffoldOptions {
         destination: cwd.join(&name),
         name,
@@ -224,29 +246,53 @@ fn completions(shell: Shell) -> Result<()> {
     Ok(())
 }
 
-fn build(release: bool, out: PathBuf) -> Result<()> {
+fn build(release: bool, out: PathBuf, verbosity: Verbosity) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
+    log(verbosity, 1, || {
+        format!("building wheel from {}", project_dir.display())
+    });
     let python = PythonInfo::detect()?;
     let wheel = build_wheel(&BuildOptions {
         project_dir,
         out_dir: out,
         python,
         release,
+        verbosity,
         metadata_dir: None,
     })?;
     println!("{}", wheel.display());
     Ok(())
 }
 
-fn develop(no_build_isolation: bool) -> Result<()> {
+fn develop(no_build_isolation: bool, verbosity: Verbosity) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
     let config = ProjectConfig::load(&project_dir)?;
     let disable_isolation = no_build_isolation || should_disable_isolation(&config);
-    run_editable_install(disable_isolation, editable_mojo_requirement(&config))
+    log(verbosity, 1, || {
+        format!(
+            "installing editable {} from {}",
+            config.package.as_str(),
+            project_dir.display()
+        )
+    });
+    log(verbosity, 2, || {
+        format!("build isolation disabled: {disable_isolation}")
+    });
+    run_editable_install(
+        disable_isolation,
+        editable_mojo_requirement(&config),
+        verbosity,
+    )
 }
 
-fn sdist(out: PathBuf) -> Result<()> {
+fn sdist(out: PathBuf, verbosity: Verbosity) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
+    log(verbosity, 1, || {
+        format!(
+            "building source distribution from {}",
+            project_dir.display()
+        )
+    });
     let archive = build_sdist(&SdistOptions {
         project_dir,
         out_dir: out,
@@ -262,6 +308,7 @@ fn add(
     group: Option<String>,
     build_system: bool,
     passthrough: Vec<String>,
+    verbosity: Verbosity,
 ) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
     if mojo {
@@ -270,9 +317,17 @@ fn add(
                 "--mojo is incompatible with --extra, --group, or trailing uv args"
             ));
         }
-        return add_mojo_dependency(&project_dir, &spec, build_system);
+        return add_mojo_dependency(&project_dir, &spec, build_system, verbosity);
     }
-    add_python_dependency(&project_dir, &spec, extra, group, build_system, passthrough)
+    add_python_dependency(
+        &project_dir,
+        &spec,
+        extra,
+        group,
+        build_system,
+        passthrough,
+        verbosity,
+    )
 }
 
 fn add_python_dependency(
@@ -282,15 +337,23 @@ fn add_python_dependency(
     group: Option<String>,
     build_system: bool,
     passthrough: Vec<String>,
+    verbosity: Verbosity,
 ) -> Result<()> {
     if build_system {
         let pyproject = project_dir.join("pyproject.toml");
+        log(verbosity, 1, || {
+            format!(
+                "adding build-system requirement {spec} to {}",
+                pyproject.display()
+            )
+        });
         mohaus_core::pyproject_edit::add_build_system_requirement(&pyproject, spec)?;
         return Ok(());
     }
     let uv = mohaus_core::toolchain::find_program_in_path("uv")
         .ok_or_else(|| anyhow!("`uv` is not on PATH; install uv to use `mohaus add`"))?;
-    let mut args = vec![OsString::from("add")];
+    let mut args = verbosity.flag_args();
+    args.push(OsString::from("add"));
     if let Some(value) = extra {
         args.push(OsString::from("--optional"));
         args.push(OsString::from(value));
@@ -303,25 +366,43 @@ fn add_python_dependency(
     for value in passthrough {
         args.push(OsString::from(value));
     }
-    run_status(uv, args)
+    run_status(uv, args, verbosity)
 }
 
-fn add_mojo_dependency(project_dir: &Path, spec: &str, build_system: bool) -> Result<()> {
+fn add_mojo_dependency(
+    project_dir: &Path,
+    spec: &str,
+    build_system: bool,
+    verbosity: Verbosity,
+) -> Result<()> {
     let pyproject = project_dir.join("pyproject.toml");
     if !pyproject.is_file() {
         return Err(anyhow!("no pyproject.toml at {}", pyproject.display()));
     }
     if build_system {
+        log(verbosity, 1, || {
+            format!(
+                "adding build-system requirement {spec} to {}",
+                pyproject.display()
+            )
+        });
         mohaus_core::pyproject_edit::add_build_system_requirement(&pyproject, spec)?;
         return Ok(());
     }
     let resolved = mohaus_core::pyproject_edit::resolve_mojo_include(project_dir, spec)?;
+    log(verbosity, 1, || {
+        format!(
+            "adding Mojo include path {} to {}",
+            resolved,
+            pyproject.display()
+        )
+    });
     mohaus_core::pyproject_edit::add_mojo_include_path(&pyproject, &resolved)?;
     println!("added mojo include path: {resolved}");
     Ok(())
 }
 
-fn watch(interval_ms: u64) -> Result<()> {
+fn watch(interval_ms: u64, verbosity: Verbosity) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
     let python = PythonInfo::detect()?;
     let config = ProjectConfig::load(&project_dir)?;
@@ -331,6 +412,9 @@ fn watch(interval_ms: u64) -> Result<()> {
         .map_err(|error| anyhow!("could not create filesystem watcher: {error}"))?;
 
     let watch_roots = watch_roots(&project_dir, &config);
+    log(verbosity, 2, || {
+        format!("watch roots: {}", format_paths(&watch_roots))
+    });
     for root in &watch_roots {
         if !root.is_dir() {
             continue;
@@ -342,7 +426,7 @@ fn watch(interval_ms: u64) -> Result<()> {
     }
 
     eprintln!("mohaus watch: building once before tracking changes");
-    ensure_editable_built(&project_dir, &python)?;
+    ensure_editable_built_with_verbosity(&project_dir, &python, verbosity)?;
     eprintln!(
         "mohaus watch: ready ({} roots, debounce {interval_ms}ms)",
         watch_roots.len()
@@ -350,7 +434,9 @@ fn watch(interval_ms: u64) -> Result<()> {
     while let Ok(event) = rx.recv() {
         match event {
             Ok(events) if relevant_events(&events) => {
-                if let Err(error) = ensure_editable_built(&project_dir, &python) {
+                if let Err(error) =
+                    ensure_editable_built_with_verbosity(&project_dir, &python, verbosity)
+                {
                     eprintln!("mohaus watch: rebuild failed: {error}");
                 }
             }
@@ -403,30 +489,72 @@ fn editable_mojo_requirement(config: &ProjectConfig) -> Option<OsString> {
 fn run_editable_install(
     no_build_isolation: bool,
     mojo_requirement: Option<OsString>,
+    verbosity: Verbosity,
 ) -> Result<()> {
     let self_wheelhouse = self_wheelhouse()?;
+    if let Some(wheelhouse) = &self_wheelhouse {
+        log(verbosity, 1, || {
+            format!("using mohaus self wheelhouse {}", wheelhouse.path.display())
+        });
+    }
     if let Some(uv) = mohaus_core::toolchain::find_program_in_path("uv") {
-        let mut args = vec![OsString::from("pip")];
-        args.extend(editable_install_args(
+        let args = uv_pip_install_args(
+            verbosity,
             no_build_isolation,
             self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
             self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
             mojo_requirement.clone(),
-        ));
-        return run_status(uv, args);
+        );
+        return run_status(uv, args, verbosity);
     }
 
     let python = mohaus_core::toolchain::find_program_in_path("python")
         .or_else(|| mohaus_core::toolchain::find_program_in_path("python3"))
         .ok_or_else(|| anyhow!("could not find uv, python, or python3 on PATH"))?;
-    let mut args = vec![OsString::from("-m"), OsString::from("pip")];
-    args.extend(editable_install_args(
+    let args = python_pip_install_args(
+        verbosity,
         no_build_isolation,
         self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
         self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
         mojo_requirement,
+    );
+    run_status(python, args, verbosity)
+}
+
+fn uv_pip_install_args(
+    verbosity: Verbosity,
+    no_build_isolation: bool,
+    self_find_links: Option<OsString>,
+    self_wheel: Option<OsString>,
+    mojo_requirement: Option<OsString>,
+) -> Vec<OsString> {
+    let mut args = verbosity.flag_args();
+    args.push(OsString::from("pip"));
+    args.extend(editable_install_args(
+        no_build_isolation,
+        self_find_links,
+        self_wheel,
+        mojo_requirement,
     ));
-    run_status(python, args)
+    args
+}
+
+fn python_pip_install_args(
+    verbosity: Verbosity,
+    no_build_isolation: bool,
+    self_find_links: Option<OsString>,
+    self_wheel: Option<OsString>,
+    mojo_requirement: Option<OsString>,
+) -> Vec<OsString> {
+    let mut args = vec![OsString::from("-m"), OsString::from("pip")];
+    args.extend(verbosity.flag_args());
+    args.extend(editable_install_args(
+        no_build_isolation,
+        self_find_links,
+        self_wheel,
+        mojo_requirement,
+    ));
+    args
 }
 
 fn editable_install_args(
@@ -527,12 +655,27 @@ fn monotonicish_nanos() -> u128 {
         .map_or(0, |duration| duration.as_nanos())
 }
 
-fn run_status(program: PathBuf, args: Vec<OsString>) -> Result<()> {
-    let status = Command::new(&program)
-        .args(args)
+fn run_status(program: PathBuf, args: Vec<OsString>, verbosity: Verbosity) -> Result<()> {
+    let mut command = Command::new(&program);
+    command.args(&args);
+    if verbosity.is_enabled() {
+        command.env(VERBOSITY_ENV, verbosity.env_value());
+    }
+    log(verbosity, 1, || {
+        format!("running {}", format_command(&program, &args))
+    });
+    if verbosity.is_enabled() {
+        log(verbosity, 2, || {
+            format!("setting child {VERBOSITY_ENV}={}", verbosity.count())
+        });
+    }
+    let status = command
         .status()
         .with_context(|| format!("failed to run {}", program.display()))?;
     if status.success() {
+        log(verbosity, 2, || {
+            format!("{} exited with {status}", program.display())
+        });
         return Ok(());
     }
     Err(anyhow!("{} exited with {status}", program.display()))
@@ -547,6 +690,42 @@ fn os_string_lossy(value: OsString) -> String {
     value.to_string_lossy().to_string()
 }
 
+fn log(verbosity: Verbosity, level: u8, message: impl FnOnce() -> String) {
+    if verbosity.at_least(level) {
+        eprintln!("mohaus: {}", message());
+    }
+}
+
+fn format_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "<none>".to_string();
+    }
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_command(program: &Path, args: &[OsString]) -> String {
+    std::iter::once(format_arg(program.as_os_str()))
+        .chain(args.iter().map(|arg| format_arg(arg.as_os_str())))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_arg(arg: &std::ffi::OsStr) -> String {
+    let value = arg.to_string_lossy();
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '=' | ':'))
+    {
+        value.to_string()
+    } else {
+        format!("{value:?}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -554,6 +733,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
     use clap_complete::{Shell, generate};
+    use mohaus_core::Verbosity;
     use tempfile::TempDir;
 
     #[test]
@@ -566,7 +746,11 @@ mod tests {
         let root = TempDir::new()?;
         let destination = root.path().join("workspace").join("monpy");
 
-        crate::init(Some("monpy".to_string()), Some(destination.clone()))?;
+        crate::init(
+            Some("monpy".to_string()),
+            Some(destination.clone()),
+            Verbosity::default(),
+        )?;
 
         assert!(destination.join("src").join("lib.mojo").is_file());
         assert!(
@@ -626,6 +810,24 @@ mod tests {
     }
 
     #[test]
+    fn verbose_counter_parses_before_subcommand() -> anyhow::Result<()> {
+        let cli = crate::Cli::try_parse_from(["mohaus", "-vvv", "build"])?;
+
+        assert_eq!(cli.verbose, 3);
+        assert!(matches!(cli.command, crate::CommandKind::Build { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn verbose_counter_parses_after_subcommand() -> anyhow::Result<()> {
+        let cli = crate::Cli::try_parse_from(["mohaus", "develop", "-vv"])?;
+
+        assert_eq!(cli.verbose, 2);
+        assert!(matches!(cli.command, crate::CommandKind::Develop { .. }));
+        Ok(())
+    }
+
+    #[test]
     fn add_mojo_dependency_appends_to_pyproject() -> anyhow::Result<()> {
         let root = TempDir::new()?;
         let project = root.path();
@@ -641,7 +843,7 @@ mod tests {
              [tool.mohaus]\n\
              mojo-include-paths = []\n",
         )?;
-        crate::add_mojo_dependency(project, "vendor/some_pkg", false)?;
+        crate::add_mojo_dependency(project, "vendor/some_pkg", false, Verbosity::default())?;
         let updated = fs::read_to_string(project.join("pyproject.toml"))?;
         assert!(updated.contains("\"vendor/some_pkg\","));
         Ok(())
@@ -686,6 +888,36 @@ mod tests {
                 ".",
                 "--find-links",
                 "/tmp/mohaus-wheelhouse"
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn uv_pip_install_args_forward_repeated_verbose_flags_before_pip() {
+        let args = crate::uv_pip_install_args(Verbosity::new(3), false, None, None, None);
+
+        assert_eq!(
+            args,
+            ["-v", "-v", "-v", "pip", "install", "-e", "."].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn python_pip_install_args_forward_repeated_verbose_flags_before_install() {
+        let args = crate::python_pip_install_args(Verbosity::new(2), true, None, None, None);
+
+        assert_eq!(
+            args,
+            [
+                "-m",
+                "pip",
+                "-v",
+                "-v",
+                "install",
+                "-e",
+                ".",
+                "--no-build-isolation"
             ]
             .map(OsString::from)
         );
