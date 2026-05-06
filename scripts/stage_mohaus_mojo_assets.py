@@ -2,7 +2,7 @@
 package source tree before `python -m build` runs.
 
 CI invokes this after `mojo package src/<name> -o <name>.mojopkg` populates
-`target/mojopkg/`. The script copies the three parity packages into
+`target/mojopkg/`. The script copies the four parity packages into
 `packages/mohaus-mojo/src/mohaus_mojo/_mojopkg/` and mirrors the scaffold
 templates into `packages/mohaus-mojo/src/mohaus_mojo/templates/`.
 
@@ -19,7 +19,12 @@ import shutil
 import sys
 from pathlib import Path
 
-PARITY_PACKAGES = ("mohaus_toolchain", "mohaus_hashing", "mohaus_scaffold")
+PARITY_PACKAGES = (
+  "mohaus_toolchain",
+  "mohaus_hashing",
+  "mohaus_scaffold",
+  "mohaus_stubgen",
+)
 TEMPLATE_FILES = (
   "pyproject.toml.tmpl",
   "lib.mojo.tmpl",

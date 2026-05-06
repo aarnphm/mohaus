@@ -141,12 +141,14 @@ jobs:
           mojo package src/mohaus_toolchain -o target/mojopkg/mohaus_toolchain.mojopkg
           mojo package src/mohaus_hashing -o target/mojopkg/mohaus_hashing.mojopkg
           mojo package src/mohaus_scaffold -o target/mojopkg/mohaus_scaffold.mojopkg
+          mojo package src/mohaus_stubgen -o target/mojopkg/mohaus_stubgen.mojopkg
       - name: run mojo unit tests
         run: |
           mojo run -I src src/tests/test_toolchain.mojo
           mojo run -I src src/tests/test_sha256_kat.mojo
           mojo run -I src src/tests/test_hashing.mojo
           mojo run -I src src/tests/test_scaffold.mojo
+          mojo run -I src src/tests/test_stubgen.mojo
       - name: parity diff against rust source_hash
         run: |
           uv pip install --system -e .

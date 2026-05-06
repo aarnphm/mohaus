@@ -8,6 +8,7 @@ pub mod log;
 pub mod pyproject_edit;
 pub mod python_info;
 pub mod sdist;
+pub mod stub;
 pub mod toolchain;
 pub mod wheel;
 

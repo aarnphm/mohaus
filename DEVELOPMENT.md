@@ -31,6 +31,7 @@ mohaus/
 │   ├── mohaus_toolchain/
 │   ├── mohaus_hashing/             # native SHA256 + walker
 │   ├── mohaus_scaffold/
+│   ├── mohaus_stubgen/             # source-level typed .pyi extractor parity
 │   └── tests/
 ├── tests/
 │   ├── fixtures/                   # corpus shared by Rust integration + Mojo parity
@@ -50,8 +51,8 @@ The three toolchains:
 - **Python** owns the `mohaus` runtime shim, the dispatcher between Rust and
   Mojo backends, and the `mohaus_mojo` sibling package. Multi-project
   resolution uses **uv workspaces**.
-- **Mojo** owns the parity ports of toolchain / hashing / scaffold. Built by
-  `mojo package` into `.mojopkg` artifacts that ship inside the
+- **Mojo** owns the parity ports of toolchain / hashing / scaffold / stubgen.
+  Built by `mojo package` into `.mojopkg` artifacts that ship inside the
   `mohaus-mojo` wheel.
 
 ## environment setup
@@ -96,6 +97,14 @@ maturin build --release --out dist
 which points at `crates/mohaus-pep517/Cargo.toml` and exposes
 `bindings = "pyo3"` with `abi3-py311`. One wheel works across CPython
 3.11 / 3.12 / 3.13 because of abi3.
+
+For mohaus-built projects, each configured Mojo extension target gets an
+adjacent generated `.pyi` stub. Stub signatures come from Python binding
+declarations plus the referenced Mojo `def` headers, so `PythonObject` maps to
+`object` instead of falling back to `Any`. `mohaus build` writes those stubs
+into the staged wheel tree, and `mohaus develop` / import-time editable
+rebuilds keep the in-place stubs fresh without forcing a Mojo compile when only
+the stub is stale.
 
 Testing convention:
 - Crate-local unit tests live next to the code (`#[cfg(test)] mod tests`).
@@ -164,6 +173,8 @@ Each parity package is one directory:
 - `src/mohaus_hashing/` — pure-Mojo SHA256 + walker (mirrors
   `mohaus_core::editable::source_hash`).
 - `src/mohaus_scaffold/` — `init`/`new` templating.
+- `src/mohaus_stubgen/` — source-level typed `.pyi` extractor parity for
+  `mohaus_core::stub` (Rust still owns the runtime path).
 
 Workflow:
 
@@ -172,12 +183,14 @@ Workflow:
 mojo package src/mohaus_toolchain -o target/mojopkg/mohaus_toolchain.mojopkg
 mojo package src/mohaus_hashing  -o target/mojopkg/mohaus_hashing.mojopkg
 mojo package src/mohaus_scaffold -o target/mojopkg/mohaus_scaffold.mojopkg
+mojo package src/mohaus_stubgen  -o target/mojopkg/mohaus_stubgen.mojopkg
 
 # unit tests for each package
 mojo run -I src src/tests/test_toolchain.mojo
 mojo run -I src src/tests/test_sha256_kat.mojo
 mojo run -I src src/tests/test_hashing.mojo
 mojo run -I src src/tests/test_scaffold.mojo
+mojo run -I src src/tests/test_stubgen.mojo
 ```
 
 Editor support: install the `Mojo (Modular)` VS Code extension. The Mojo
@@ -217,6 +230,7 @@ Locally, after editing a Mojo parity port:
 mojo package src/mohaus_toolchain -o target/mojopkg/mohaus_toolchain.mojopkg
 mojo package src/mohaus_hashing  -o target/mojopkg/mohaus_hashing.mojopkg
 mojo package src/mohaus_scaffold -o target/mojopkg/mohaus_scaffold.mojopkg
+mojo package src/mohaus_stubgen  -o target/mojopkg/mohaus_stubgen.mojopkg
 python scripts/stage_mohaus_mojo_assets.py \
   --mojopkg-dir target/mojopkg \
   --templates-source crates/mohaus-scaffold/src/templates \

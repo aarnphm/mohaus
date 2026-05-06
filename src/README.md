@@ -13,6 +13,7 @@ exactly like the layout users get scaffolded.
 | `mohaus_toolchain` | `crates/mohaus-core/src/toolchain.rs` | `subprocess`, `os.env`, `pathlib`, `os.path` | full native impl, no Python interop |
 | `mohaus_hashing` | `crates/mohaus-core/src/editable.rs` (`source_hash`) | `pathlib` for walking; **pure-Mojo SHA256** in `_sha256.mojo` (FIPS 180-4) | byte-equality contract with the Rust `sha2` crate; KAT vectors pinned in `tests/test_sha256_kat.mojo` |
 | `mohaus_scaffold` | `crates/mohaus-scaffold/src/lib.rs` | `pathlib`, file IO | templates copied byte-for-byte from `crates/mohaus-scaffold/src/templates/` |
+| `mohaus_stubgen` | `crates/mohaus-core/src/stub.rs` | string parsing only | source-level `.pyi` extractor parity; Rust remains the runtime stubgen path |
 
 ## parity contract
 
@@ -33,12 +34,13 @@ mojo run src/tests/test_toolchain.mojo
 mojo run src/tests/test_sha256_kat.mojo
 mojo run src/tests/test_hashing.mojo
 mojo run src/tests/test_scaffold.mojo
+mojo run src/tests/test_stubgen.mojo
 ```
 
 No CPython interop is required: SHA256 is implemented natively in
 `mohaus_hashing/_sha256.mojo`, the toolchain probe uses Mojo's
-`subprocess` + `os.env`, and scaffold templating reads the same template
-files the Rust crate ships.
+`subprocess` + `os.env`, scaffold templating reads the same template
+files the Rust crate ships, and stubgen only parses binding source text.
 
 ## what's blocked
 

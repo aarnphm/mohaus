@@ -20,6 +20,10 @@ When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
 wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
 first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,
 `$MODULAR_HOME/bin/mojo`, and `--no-build-isolation`.
+Compiled Mojo extension targets also get adjacent generated typed `.pyi` stubs
+during `mohaus develop`, editable rebuilds, and wheel builds. The stub writer
+uses the Mojo binding declarations plus referenced `def` headers, so
+`PythonObject` becomes `object` instead of `Any`.
 Use `-v`, `-vv`, or `-vvv` before or after a subcommand to print mohaus
 diagnostics and forward matching verbosity into uv/pip-backed installs.
 
@@ -41,9 +45,10 @@ uv pip install mohaus --index https://aarnphm.github.io/mohaus/simple/
 
 The default install ships the Rust pyo3 backend. Add the `[mojo]` extra to
 pull in `mohaus-mojo`, the sibling package containing pure-Mojo parity ports
-of `mohaus`'s build primitives (toolchain, hashing, scaffold). When both
-packages are installed and a `mojo` toolchain is reachable, the dispatcher
-routes those primitives through the Mojo `.mojopkg` artifacts:
+of `mohaus`'s build primitives (toolchain, hashing, scaffold, stubgen). When
+both packages are installed and a `mojo` toolchain is reachable, the dispatcher
+routes the stable parity primitives through the Mojo `.mojopkg` artifacts;
+stubgen still stays on the Rust runtime path while the parity port matures:
 
 ```bash
 uv pip install 'mohaus[mojo]' --index https://aarnphm.github.io/mohaus/simple/

@@ -10,6 +10,7 @@ use crate::config::{MojoModule, ProjectConfig};
 use crate::error::{MohausError, Result};
 use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
+use crate::stub::module_stub_plan_for_extension;
 use crate::toolchain::{
     resolve_verified_mojo_with_verbosity, run_command_with_env_remove_with_verbosity,
 };
@@ -117,32 +118,51 @@ pub fn ensure_editable_built_with_verbosity(
         });
         return Ok(());
     }
-    let pinned = config
-        .mojo_version
-        .as_ref()
-        .ok_or_else(|| MohausError::InvalidProject {
-            message: ".mojo-version is required for editable builds with Mojo modules".to_string(),
-        })?;
-    let mojo = resolve_verified_mojo_with_verbosity(pinned, verbosity)?;
+    let mojo = if plan.iter().any(|stale| stale.needs_compile) {
+        let pinned = config
+            .mojo_version
+            .as_ref()
+            .ok_or_else(|| MohausError::InvalidProject {
+                message: ".mojo-version is required for editable builds with Mojo modules"
+                    .to_string(),
+            })?;
+        Some(resolve_verified_mojo_with_verbosity(pinned, verbosity)?)
+    } else {
+        None
+    };
     for stale in plan {
-        debug(verbosity, 1, || {
-            format!(
-                "rebuilding editable Mojo module {} -> {}",
-                stale.module.name.as_str(),
-                stale.extension_path.display()
-            )
-        });
-        compile_module_with_verbosity(
-            &config,
-            &stale.module,
-            &stale.extension_path,
-            &mojo.executable,
-            verbosity,
-        )?;
-        write_file(&stale.hash_path, stale.expected_hash.as_bytes())?;
-        debug(verbosity, 3, || {
-            format!("wrote editable source hash {}", stale.hash_path.display())
-        });
+        if stale.needs_compile {
+            let Some(mojo) = mojo.as_ref() else {
+                return Err(MohausError::InvalidProject {
+                    message:
+                        "editable rebuild requested Mojo compilation without a resolved toolchain"
+                            .to_string(),
+                });
+            };
+            debug(verbosity, 1, || {
+                format!(
+                    "rebuilding editable Mojo module {} -> {}",
+                    stale.module.name.as_str(),
+                    stale.extension_path.display()
+                )
+            });
+            compile_module_with_verbosity(
+                &config,
+                &stale.module,
+                &stale.extension_path,
+                &mojo.executable,
+                verbosity,
+            )?;
+            write_file(&stale.hash_path, stale.expected_hash.as_bytes())?;
+            debug(verbosity, 3, || {
+                format!("wrote editable source hash {}", stale.hash_path.display())
+            });
+        } else {
+            write_file(&stale.stub_path, stale.stub_text.as_bytes())?;
+            debug(verbosity, 2, || {
+                format!("refreshed editable stub {}", stale.stub_path.display())
+            });
+        }
     }
     Ok(())
 }
@@ -152,7 +172,10 @@ struct StaleModule {
     module: MojoModule,
     extension_path: PathBuf,
     hash_path: PathBuf,
+    stub_path: PathBuf,
+    stub_text: String,
     expected_hash: String,
+    needs_compile: bool,
 }
 
 fn plan_rebuilds(config: &ProjectConfig, python: &PythonInfo) -> Result<Vec<StaleModule>> {
@@ -161,18 +184,36 @@ fn plan_rebuilds(config: &ProjectConfig, python: &PythonInfo) -> Result<Vec<Stal
         let hash = source_hash(config, module)?;
         let hash_path = editable_hash_path(config, module);
         let extension_path = extension_output_path(config, module, &python.ext_suffix);
+        let stub = module_stub_plan_for_extension(config, module, &extension_path)?;
         let current_hash = fs::read_to_string(&hash_path).ok();
-        if extension_path.is_file() && current_hash.as_deref() == Some(hash.as_str()) {
+        let extension_fresh =
+            extension_path.is_file() && current_hash.as_deref() == Some(hash.as_str());
+        let stub_fresh = stub_matches(&stub.path, &stub.text)?;
+        if extension_fresh && stub_fresh {
             continue;
         }
         stale.push(StaleModule {
             module: module.clone(),
             extension_path,
             hash_path,
+            stub_path: stub.path,
+            stub_text: stub.text,
             expected_hash: hash,
+            needs_compile: !extension_fresh,
         });
     }
     Ok(stale)
+}
+
+fn stub_matches(path: &Path, expected: &str) -> Result<bool> {
+    match fs::read_to_string(path) {
+        Ok(current) => Ok(current == expected),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(MohausError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 struct RebuildLock {
@@ -260,6 +301,10 @@ pub fn compile_module_with_verbosity(
     if let Some(runtime) = &runtime {
         copy_mojo_runtime_libs(runtime, output, verbosity)?;
     }
+    let stub_path = crate::stub::write_module_stub_for_extension(config, module, output)?;
+    debug(verbosity, 3, || {
+        format!("wrote Python stub {}", stub_path.display())
+    });
     Ok(())
 }
 
@@ -544,6 +589,8 @@ mod tests {
         MOJO_COMPILER_RT, MOJO_LOADER_RPATH, MOJO_RUNTIME_LIBS, MojoRuntimeLibs,
         add_mojo_runtime_link_args, discover_mojo_runtime_libs, source_hash,
     };
+    use crate::log::Verbosity;
+    use crate::python_info::PythonInfo;
 
     #[test]
     fn source_hash_changes_with_mojo_source() {
@@ -573,6 +620,129 @@ module-name = "demo._native"
         .unwrap();
         let after = source_hash(&config, &config.modules[0]).unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn plan_rebuilds_refreshes_missing_stub_without_recompile() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::create_dir_all(temp.path().join("python/demo")).unwrap();
+        fs::write(temp.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        fs::write(
+            temp.path().join("pyproject.toml"),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/lib.mojo"),
+            r#"
+from std.python.bindings import PythonModuleBuilder
+
+@export
+def PyInit__native() -> PythonObject:
+    var module = PythonModuleBuilder("_native")
+    module.def_function[passthrough]("passthrough")
+    return module.finalize()
+
+def passthrough(value: PythonObject) raises -> PythonObject:
+    return value
+"#,
+        )
+        .unwrap();
+        let config = ProjectConfig::load(temp.path()).unwrap();
+        let python = PythonInfo::from_parts(
+            ".cpython-311-darwin.so".to_string(),
+            "cpython-311".to_string(),
+            "macosx-11.0-arm64".to_string(),
+            3,
+            11,
+        )
+        .unwrap();
+        let module = &config.modules[0];
+        let extension_path = super::extension_output_path(&config, module, &python.ext_suffix);
+        fs::write(&extension_path, "").unwrap();
+        let hash_path = super::editable_hash_path(&config, module);
+        fs::create_dir_all(hash_path.parent().unwrap()).unwrap();
+        fs::write(&hash_path, source_hash(&config, module).unwrap()).unwrap();
+
+        let plan = super::plan_rebuilds(&config, &python).unwrap();
+
+        assert_eq!(plan.len(), 1);
+        assert!(!plan[0].needs_compile);
+        assert_eq!(
+            plan[0].stub_path,
+            temp.path().join("python/demo/_native.pyi")
+        );
+        assert!(plan[0].stub_text.contains("def passthrough"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compile_module_writes_stub_next_to_extension() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::create_dir_all(temp.path().join("python/demo")).unwrap();
+        fs::write(temp.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        fs::write(
+            temp.path().join("pyproject.toml"),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/lib.mojo"),
+            r#"
+from std.python.bindings import PythonModuleBuilder
+
+@export
+def PyInit__native() -> PythonObject:
+    var module = PythonModuleBuilder("_native")
+    module.def_function[passthrough]("passthrough")
+    return module.finalize()
+
+def passthrough(value: PythonObject) raises -> PythonObject:
+    return value
+"#,
+        )
+        .unwrap();
+        let mojo = temp.path().join("bin/mojo");
+        fs::create_dir_all(mojo.parent().unwrap()).unwrap();
+        fs::write(&mojo, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = fs::metadata(&mojo).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&mojo, permissions).unwrap();
+
+        let config = ProjectConfig::load(temp.path()).unwrap();
+        let output = temp
+            .path()
+            .join("python/demo/_native.cpython-311-darwin.so");
+
+        super::compile_module_with_verbosity(
+            &config,
+            &config.modules[0],
+            &output,
+            &mojo,
+            Verbosity::default(),
+        )
+        .unwrap();
+
+        let stub = fs::read_to_string(temp.path().join("python/demo/_native.pyi")).unwrap();
+        assert!(stub.contains("def passthrough(value: object) -> object"));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

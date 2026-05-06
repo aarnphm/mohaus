@@ -36,7 +36,7 @@ __all__ = [
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _MOJOPKG_ROOT = _PACKAGE_ROOT / "_mojopkg"
 _TEMPLATES_ROOT = _PACKAGE_ROOT / "templates"
-_KNOWN = ("mohaus_toolchain", "mohaus_hashing", "mohaus_scaffold")
+_KNOWN = ("mohaus_toolchain", "mohaus_hashing", "mohaus_scaffold", "mohaus_stubgen")
 
 
 def has_mojopkg(name: str) -> bool:
@@ -57,7 +57,7 @@ def templates_dir() -> Path:
 
 
 def is_runtime_available() -> bool:
-  """True when host has `mojo` plus all three parity packages bundled."""
+  """True when host has `mojo` plus every bundled parity package."""
   if os.environ.get("MOHAUS_MOJO"):
     if Path(os.environ["MOHAUS_MOJO"]).is_file():
       return _all_packages_present()

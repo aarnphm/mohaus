@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use mohaus_core::config::ProjectConfig;
 use mohaus_core::editable::build_mojo_args;
+use mohaus_core::stub::module_stub_plan_for_extension;
 
 fn workspace_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -118,4 +119,33 @@ fn multi_module_fixture_produces_one_argv_per_module() {
             output.display()
         );
     }
+}
+
+#[test]
+fn multi_module_fixture_produces_one_stub_per_targeted_binding() {
+    let root = tempfile::TempDir::new().unwrap();
+    copy_fixture("multi_module", root.path());
+
+    let config = ProjectConfig::load(root.path()).unwrap();
+    let stubs = config
+        .modules
+        .iter()
+        .map(|module| {
+            let extension = root.path().join(format!(
+                "python/multi_module/{}.cpython-311-darwin.so",
+                module.name.leaf()
+            ));
+            module_stub_plan_for_extension(&config, module, &extension).unwrap()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(stubs.len(), 2);
+    assert!(stubs.iter().any(|stub| {
+        stub.path == root.path().join("python/multi_module/_native.pyi")
+            && stub.text.contains("def hello(value: object) -> object")
+    }));
+    assert!(stubs.iter().any(|stub| {
+        stub.path == root.path().join("python/multi_module/_extra.pyi")
+            && stub.text.contains("def bonus(value: object) -> object")
+    }));
 }
