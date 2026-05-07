@@ -154,6 +154,7 @@ mod tests {
         assert_eq!(config.package.as_str(), "acme");
         assert_eq!(config.modules.len(), 1);
         assert_eq!(config.modules[0].name.as_str(), "acme._native");
+        assert!(config.generate_stub);
         assert!(destination.join("LICENSE").is_file());
         assert!(destination.join(".mojo-version").is_file());
     }

@@ -101,10 +101,14 @@ which points at `crates/mohaus-pep517/Cargo.toml` and exposes
 For mohaus-built projects, each configured Mojo extension target gets an
 adjacent generated `.pyi` stub. Stub signatures come from Python binding
 declarations plus the referenced Mojo `def` headers, so `PythonObject` maps to
-`object` instead of falling back to `Any`. `mohaus build` writes those stubs
-into the staged wheel tree, and `mohaus develop` / import-time editable
-rebuilds keep the in-place stubs fresh without forcing a Mojo compile when only
-the stub is stale.
+`object` instead of falling back to `Any`. When a `PythonObject(...)` return
+wraps a primitive, `None`, or an allocated bound type, stubgen narrows that
+return to the concrete Python surface type. `mohaus build` writes those stubs
+into the staged wheel tree, and `mohaus develop` / import-time editable rebuilds
+keep the in-place stubs fresh without forcing a Mojo compile when only the stub
+is stale. Projects that keep hand-authored `.pyi` files can set
+`[tool.mohaus] generate-stub = false`; mohaus then compiles extensions while
+leaving stub files entirely to `python-src`.
 
 Testing convention:
 - Crate-local unit tests live next to the code (`#[cfg(test)] mod tests`).

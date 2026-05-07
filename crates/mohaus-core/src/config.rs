@@ -220,6 +220,7 @@ pub struct ProjectConfig {
     pub python_src: PathBuf,
     pub modules: Vec<MojoModule>,
     pub strip: bool,
+    pub generate_stub: bool,
     pub mojo_flags: Vec<String>,
     pub mojo_include_paths: Vec<PathBuf>,
     pub metadata: ProjectMetadata,
@@ -267,6 +268,7 @@ impl ProjectConfig {
         let mojo_src = tool.mojo_src.unwrap_or_else(|| PathBuf::from("src"));
         let python_src = tool.python_src.unwrap_or_else(|| PathBuf::from("python"));
         let strip = tool.strip.unwrap_or(true);
+        let generate_stub = tool.generate_stub.unwrap_or(true);
         let mojo_flags = tool.mojo_flags.unwrap_or_default();
         validate_mojo_flags(&mojo_flags)?;
         let mojo_include_paths = tool.mojo_include_paths.unwrap_or_default();
@@ -328,6 +330,7 @@ impl ProjectConfig {
             python_src,
             modules,
             strip,
+            generate_stub,
             mojo_flags,
             mojo_include_paths,
             metadata,
@@ -591,6 +594,7 @@ struct RawMohaus {
     python_src: Option<PathBuf>,
     module_name: Option<String>,
     strip: Option<bool>,
+    generate_stub: Option<bool>,
     mojo_flags: Option<Vec<String>>,
     mojo_include_paths: Option<Vec<PathBuf>>,
     modules: Option<Vec<RawModule>>,
@@ -773,5 +777,48 @@ mojo-flags = ["-O3", "-debug-level=full"]
             config.mojo_flags,
             vec!["-O3".to_string(), "-debug-level=full".to_string()]
         );
+    }
+
+    #[test]
+    fn generate_stub_defaults_to_true() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        write_pyproject(
+            root.path(),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        );
+
+        let config = ProjectConfig::load(root.path()).unwrap();
+
+        assert!(config.generate_stub);
+    }
+
+    #[test]
+    fn generate_stub_can_be_disabled() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        write_pyproject(
+            root.path(),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+generate-stub = false
+"#,
+        );
+
+        let config = ProjectConfig::load(root.path()).unwrap();
+
+        assert!(!config.generate_stub);
     }
 }

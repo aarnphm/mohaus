@@ -66,6 +66,7 @@ struct StubClass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedSource {
     defs: BTreeMap<String, MojoDef>,
+    field_types: BTreeMap<String, String>,
     imports: BTreeMap<String, String>,
     calls: Vec<BindingCall>,
 }
@@ -81,6 +82,8 @@ struct StubSource {
 struct MojoDef {
     params: Vec<MojoParam>,
     return_type: Option<String>,
+    body: String,
+    owner: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -299,6 +302,7 @@ fn module_name_for_source(root: &Path, path: &Path) -> Option<String> {
 
 fn parse_sources(sources: &[StubSource]) -> std::result::Result<ParsedSource, String> {
     let mut defs = BTreeMap::new();
+    let mut field_types = BTreeMap::new();
     let mut imports = BTreeMap::new();
     let mut calls = Vec::new();
     let mut saw_entry = false;
@@ -307,6 +311,7 @@ fn parse_sources(sources: &[StubSource]) -> std::result::Result<ParsedSource, St
         let parsed =
             parse_source_unit(&source.text, source.module_name.as_deref(), source.is_entry)?;
         defs.extend(parsed.defs);
+        merge_field_types(&mut field_types, parsed.field_types);
         if source.is_entry {
             saw_entry = true;
             imports.extend(parsed.imports);
@@ -320,9 +325,16 @@ fn parse_sources(sources: &[StubSource]) -> std::result::Result<ParsedSource, St
 
     Ok(ParsedSource {
         defs,
+        field_types,
         imports,
         calls,
     })
+}
+
+fn merge_field_types(target: &mut BTreeMap<String, String>, source: BTreeMap<String, String>) {
+    for (name, ty) in source {
+        insert_unique_field_type(target, name, ty);
+    }
 }
 
 fn parse_source_unit(
@@ -332,6 +344,7 @@ fn parse_source_unit(
 ) -> std::result::Result<ParsedSource, String> {
     let lines = source.lines().collect::<Vec<_>>();
     let mut defs = BTreeMap::new();
+    let mut field_types = BTreeMap::new();
     let imports = if collect_exports {
         parse_imports(source)?
     } else {
@@ -358,10 +371,21 @@ fn parse_source_unit(
             structs.push((indent, name));
         }
 
+        if let Some((struct_indent, struct_name)) = structs.last()
+            && indent > *struct_indent
+            && indent - *struct_indent <= 4
+            && let Some((field, ty)) = parse_field_decl(trimmed)?
+        {
+            insert_field_type(&mut field_types, struct_name, &field, &ty);
+        }
+
         if starts_def(trimmed) {
             let (header, consumed) = collect_def_header(&lines, index)?;
-            let mojo_def = parse_def_header(&header)?;
+            let body = collect_def_body(&lines, consumed, indent);
+            let mut mojo_def = parse_def_header(&header)?;
+            mojo_def.def.body = body;
             let struct_name = structs.last().map(|(_, name)| name.clone());
+            mojo_def.def.owner = struct_name.clone();
             insert_def(&mut defs, module_name, None, &mojo_def, collect_exports);
             if let Some(struct_name) = struct_name {
                 insert_def(
@@ -390,6 +414,7 @@ fn parse_source_unit(
     };
     Ok(ParsedSource {
         defs,
+        field_types,
         imports,
         calls,
     })
@@ -411,6 +436,47 @@ fn insert_def(
     }
     if let Some(module_name) = module_name {
         defs.insert(format!("{module_name}.{local_name}"), mojo_def.def.clone());
+    }
+}
+
+fn parse_field_decl(trimmed: &str) -> std::result::Result<Option<(String, String)>, String> {
+    let Some(rest) = trimmed.strip_prefix("var ") else {
+        return Ok(None);
+    };
+    let Some((name_part, ty_part)) = rest.split_once(':') else {
+        return Ok(None);
+    };
+    let Some(name) = name_part.split_whitespace().last() else {
+        return Ok(None);
+    };
+    let ty = strip_default(ty_part).trim();
+    if ty.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((clean_identifier(name)?, normalize_mojo_type(ty))))
+}
+
+fn insert_field_type(
+    field_types: &mut BTreeMap<String, String>,
+    struct_name: &str,
+    field_name: &str,
+    ty: &str,
+) {
+    insert_unique_field_type(field_types, field_name.to_string(), ty.to_string());
+    insert_unique_field_type(
+        field_types,
+        format!("{struct_name}.{field_name}"),
+        ty.to_string(),
+    );
+}
+
+fn insert_unique_field_type(field_types: &mut BTreeMap<String, String>, name: String, ty: String) {
+    match field_types.get_mut(&name) {
+        Some(existing) if existing != &ty => existing.clear(),
+        Some(_) => {}
+        None => {
+            field_types.insert(name, ty);
+        }
     }
 }
 
@@ -558,6 +624,22 @@ fn collect_def_header(
     ))
 }
 
+fn collect_def_body(lines: &[&str], start: usize, def_indent: usize) -> String {
+    let mut body = String::new();
+    let mut index = start;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = strip_comment(line).trim();
+        if !trimmed.is_empty() && indentation(line) <= def_indent {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+        index += 1;
+    }
+    body
+}
+
 fn parse_def_header(header: &str) -> std::result::Result<NamedDef, String> {
     let colon =
         top_level_colon_index(header).ok_or_else(|| "def header has no colon".to_string())?;
@@ -584,6 +666,8 @@ fn parse_def_header(header: &str) -> std::result::Result<NamedDef, String> {
         def: MojoDef {
             params,
             return_type,
+            body: String::new(),
+            owner: None,
         },
     })
 }
@@ -902,7 +986,7 @@ fn resolve_bindings(parsed: &ParsedSource) -> std::result::Result<StubBindings, 
                 require_stub_identifier(&visible_name)?;
                 let target = required_generic(call, "def_function")?;
                 let mojo_def = resolve_def(parsed, &target)?;
-                let function = stub_function_from_def(mojo_def, 0, false)?;
+                let function = stub_function_from_def(parsed, mojo_def, 0, false)?;
                 bindings.functions.insert(visible_name, function);
             }
             BindingKind::PyFunction | BindingKind::PyCFunction => {
@@ -916,7 +1000,7 @@ fn resolve_bindings(parsed: &ParsedSource) -> std::result::Result<StubBindings, 
                 let (class_name, method_name) = class_and_visible(call, current_class.as_deref())?;
                 let target = required_generic(call, "def_method")?;
                 let mojo_def = resolve_def(parsed, &target)?;
-                let function = stub_function_from_def(mojo_def, 1, false)?;
+                let function = stub_function_from_def(parsed, mojo_def, 1, false)?;
                 bindings
                     .classes
                     .entry(class_name)
@@ -928,7 +1012,7 @@ fn resolve_bindings(parsed: &ParsedSource) -> std::result::Result<StubBindings, 
                 let (class_name, method_name) = class_and_visible(call, current_class.as_deref())?;
                 let target = required_generic(call, "def_staticmethod")?;
                 let mojo_def = resolve_def(parsed, &target)?;
-                let function = stub_function_from_def(mojo_def, 0, false)?;
+                let function = stub_function_from_def(parsed, mojo_def, 0, false)?;
                 bindings
                     .classes
                     .entry(class_name)
@@ -1032,6 +1116,7 @@ fn class_for_type_call(
 }
 
 fn stub_function_from_def(
+    parsed: &ParsedSource,
     mojo_def: &MojoDef,
     drop_params: usize,
     varargs: bool,
@@ -1068,7 +1153,7 @@ fn stub_function_from_def(
         });
     }
     let returns = match mojo_def.return_type.as_deref().map(normalize_mojo_type) {
-        Some(ty) => python_type_for_mojo_return(&ty)
+        Some(ty) => python_type_for_mojo_return(parsed, mojo_def, &ty)
             .ok_or_else(|| format!("unsupported Python binding return type `{ty}`"))?,
         None => "None".to_string(),
     };
@@ -1103,12 +1188,356 @@ fn python_type_for_mojo(ty: &str) -> Option<String> {
     }
 }
 
-fn python_type_for_mojo_return(ty: &str) -> Option<String> {
+fn python_type_for_mojo_return(
+    parsed: &ParsedSource,
+    mojo_def: &MojoDef,
+    ty: &str,
+) -> Option<String> {
     if ty == "None" {
         Some("None".to_string())
+    } else if ty == "PythonObject" {
+        Some(infer_python_object_return(parsed, mojo_def).unwrap_or_else(|| "object".to_string()))
     } else {
         python_type_for_mojo(ty)
     }
+}
+
+fn infer_python_object_return(parsed: &ParsedSource, mojo_def: &MojoDef) -> Option<String> {
+    infer_python_object_return_inner(parsed, mojo_def, &mut Vec::new())
+}
+
+fn infer_python_object_return_inner(
+    parsed: &ParsedSource,
+    mojo_def: &MojoDef,
+    stack: &mut Vec<String>,
+) -> Option<String> {
+    let mut types = Vec::new();
+    for expression in return_expressions(&mojo_def.body) {
+        let inferred = infer_python_object_return_expression(parsed, mojo_def, &expression, stack)?;
+        push_unique_type(&mut types, inferred);
+    }
+    (!types.is_empty()).then(|| types.join(" | "))
+}
+
+fn return_expressions(body: &str) -> Vec<String> {
+    let mut expressions = Vec::new();
+    for line in body.lines() {
+        let trimmed = strip_comment(line).trim();
+        if let Some(expression) = trimmed.strip_prefix("return ") {
+            expressions.push(expression.trim().to_string());
+        }
+    }
+    expressions
+}
+
+fn push_unique_type(types: &mut Vec<String>, ty: String) {
+    if !types.iter().any(|existing| existing == &ty) {
+        types.push(ty);
+    }
+}
+
+fn infer_python_object_return_expression(
+    parsed: &ParsedSource,
+    mojo_def: &MojoDef,
+    expression: &str,
+    stack: &mut Vec<String>,
+) -> Option<String> {
+    let expression = expression.trim();
+    if expression == "PythonObject.none()" {
+        return Some("None".to_string());
+    }
+    if let Some(inner) = call_inner(expression, "PythonObject") {
+        let args = split_top_level_commas(inner);
+        for arg in &args {
+            if let Some(alloc_expr) = arg.trim().strip_prefix("alloc=") {
+                return infer_alloc_python_type(parsed, mojo_def, alloc_expr);
+            }
+        }
+        let first = args.first()?.trim();
+        return if first == "None" {
+            Some("None".to_string())
+        } else {
+            infer_python_value_type(parsed, mojo_def, first)
+        };
+    }
+
+    let call = call_name(expression)?;
+    if stack.iter().any(|seen| seen == &call) {
+        return None;
+    }
+    let target = resolve_inferred_def(parsed, &call)?;
+    let return_type = target.return_type.as_deref().map(normalize_mojo_type)?;
+    if return_type == "PythonObject" {
+        stack.push(call);
+        let inferred = infer_python_object_return_inner(parsed, target, stack);
+        stack.pop();
+        inferred
+    } else {
+        python_type_for_mojo(&return_type)
+    }
+}
+
+fn call_inner<'a>(expression: &'a str, name: &str) -> Option<&'a str> {
+    let rest = expression.strip_prefix(name)?;
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let open = name.len();
+    let close = matching_delimiter(expression, open, '(', ')')?;
+    expression[close + 1..]
+        .trim()
+        .is_empty()
+        .then_some(&expression[open + 1..close])
+}
+
+fn infer_alloc_python_type(
+    parsed: &ParsedSource,
+    mojo_def: &MojoDef,
+    expression: &str,
+) -> Option<String> {
+    let expression = strip_mojo_move(expression);
+    if valid_python_identifier(expression)
+        && let Some(mojo_type) = infer_local_variable_mojo_type(parsed, &mojo_def.body, expression)
+        && let Some(python_type) = python_alloc_type_for_mojo(&mojo_type)
+    {
+        return Some(python_type);
+    }
+    infer_mojo_expression_type(parsed, expression)
+        .and_then(|ty| python_alloc_type_for_mojo(&ty))
+        .or_else(|| single_bound_class(parsed))
+}
+
+fn strip_mojo_move(expression: &str) -> &str {
+    expression
+        .trim()
+        .strip_suffix('^')
+        .unwrap_or(expression.trim())
+        .trim()
+}
+
+fn infer_local_variable_mojo_type(
+    parsed: &ParsedSource,
+    body: &str,
+    variable: &str,
+) -> Option<String> {
+    for line in body.lines() {
+        let trimmed = strip_comment(line).trim();
+        let Some(rest) = trimmed
+            .strip_prefix("var ")
+            .or_else(|| trimmed.strip_prefix("let "))
+        else {
+            continue;
+        };
+        let Some((left, right)) = rest.split_once('=') else {
+            continue;
+        };
+        let left = left.trim();
+        let name = left.split_once(':').map_or(left, |(name, _)| name).trim();
+        if name != variable {
+            continue;
+        }
+        if let Some((_, explicit_type)) = left.split_once(':') {
+            return Some(normalize_mojo_type(explicit_type));
+        }
+        if let Some(inferred) = infer_mojo_expression_type(parsed, right.trim()) {
+            return Some(inferred);
+        }
+    }
+    None
+}
+
+fn infer_python_value_type(
+    parsed: &ParsedSource,
+    mojo_def: &MojoDef,
+    expression: &str,
+) -> Option<String> {
+    let expression = expression.trim();
+    if expression == "None" {
+        return Some("None".to_string());
+    }
+    if matches!(expression, "True" | "False") {
+        return Some("bool".to_string());
+    }
+    if parse_string_literal(expression).is_some() {
+        return Some("str".to_string());
+    }
+    if is_int_literal(expression) {
+        return Some("int".to_string());
+    }
+    if is_float_literal(expression) {
+        return Some("float".to_string());
+    }
+    if expression.ends_with(".__int__()") || expression.ends_with(".__index__()") {
+        return Some("int".to_string());
+    }
+    if contains_comparison(expression) {
+        return Some("bool".to_string());
+    }
+    if let Some(call) = call_name(expression) {
+        if let Some(ty) = python_type_for_builtin_mojo_constructor(&call) {
+            return Some(ty);
+        }
+        if let Some(ty) =
+            infer_mojo_call_return_type(parsed, &call).and_then(|ty| python_type_for_mojo(&ty))
+        {
+            return Some(ty);
+        }
+    }
+    if valid_python_identifier(expression)
+        && let Some(ty) = infer_local_variable_mojo_type(parsed, &mojo_def.body, expression)
+    {
+        return python_type_for_mojo(&ty);
+    }
+    infer_field_access_python_type(parsed, mojo_def, expression)
+}
+
+fn is_int_literal(expression: &str) -> bool {
+    let value = expression.strip_prefix('-').unwrap_or(expression);
+    !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn is_float_literal(expression: &str) -> bool {
+    let value = expression.strip_prefix('-').unwrap_or(expression);
+    value.contains('.')
+        && value.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+        && value.chars().any(|ch| ch.is_ascii_digit())
+}
+
+fn contains_comparison(expression: &str) -> bool {
+    [" == ", " != ", " <= ", " >= ", " < ", " > "]
+        .iter()
+        .any(|operator| expression.contains(operator))
+}
+
+fn python_type_for_builtin_mojo_constructor(name: &str) -> Option<String> {
+    match name {
+        "Bool" => Some("bool".to_string()),
+        "Int" | "Int8" | "Int16" | "Int32" | "Int64" | "UInt" | "UInt8" | "UInt16" | "UInt32"
+        | "UInt64" | "len" => Some("int".to_string()),
+        "Float16" | "Float32" | "Float64" => Some("float".to_string()),
+        "String" | "StringSlice" => Some("str".to_string()),
+        _ => None,
+    }
+}
+
+fn infer_mojo_expression_type(parsed: &ParsedSource, expression: &str) -> Option<String> {
+    let call = call_name(strip_mojo_move(expression))?;
+    infer_mojo_call_return_type(parsed, &call)
+}
+
+fn infer_mojo_call_return_type(parsed: &ParsedSource, call: &str) -> Option<String> {
+    resolve_inferred_def(parsed, call.trim())
+        .and_then(|mojo_def| mojo_def.return_type.as_ref())
+        .map(|ty| normalize_mojo_type(ty))
+}
+
+fn resolve_inferred_def<'a>(parsed: &'a ParsedSource, call: &str) -> Option<&'a MojoDef> {
+    if let Some(direct) = parsed.defs.get(call) {
+        return Some(direct);
+    }
+    let leaf = call.rsplit('.').next().unwrap_or(call).trim();
+    let mut match_def: Option<&MojoDef> = None;
+    for (name, mojo_def) in &parsed.defs {
+        if name.rsplit('.').next() != Some(leaf) {
+            continue;
+        }
+        match match_def {
+            Some(existing) if existing != mojo_def => return None,
+            Some(_) => {}
+            None => match_def = Some(mojo_def),
+        }
+    }
+    match_def
+}
+
+fn call_name(expression: &str) -> Option<String> {
+    let open = find_top_level_char(expression, '(')?;
+    let head = strip_generic_params(expression[..open].trim()).trim();
+    let leaf = head.rsplit('.').next().unwrap_or(head).trim();
+    valid_python_identifier(leaf).then(|| leaf.to_string())
+}
+
+fn python_alloc_type_for_mojo(ty: &str) -> Option<String> {
+    let normalized = normalize_mojo_type(ty);
+    if normalized.contains('[') || python_type_for_mojo(&normalized).is_some() {
+        return None;
+    }
+    let leaf = normalized.rsplit('.').next().unwrap_or(&normalized);
+    valid_python_identifier(leaf).then(|| leaf.to_string())
+}
+
+fn single_bound_class(parsed: &ParsedSource) -> Option<String> {
+    let mut classes = Vec::new();
+    for call in &parsed.calls {
+        if call.kind == BindingKind::AddType
+            && let Some(name) = &call.visible_name
+            && !classes.iter().any(|existing| existing == name)
+        {
+            classes.push(name.clone());
+        }
+    }
+    (classes.len() == 1).then(|| classes.remove(0))
+}
+
+fn infer_field_access_python_type(
+    parsed: &ParsedSource,
+    mojo_def: &MojoDef,
+    expression: &str,
+) -> Option<String> {
+    if let Some(owner) = &mojo_def.owner
+        && let Some(python_type) = infer_owner_field_access_python_type(parsed, owner, expression)
+    {
+        return Some(python_type);
+    }
+    for (field, ty) in &parsed.field_types {
+        if field.contains('.') {
+            continue;
+        }
+        if let Some(python_type) = infer_field_python_type(expression, field, ty) {
+            return Some(python_type);
+        }
+    }
+    None
+}
+
+fn infer_owner_field_access_python_type(
+    parsed: &ParsedSource,
+    owner: &str,
+    expression: &str,
+) -> Option<String> {
+    let prefix = format!("{owner}.");
+    for (field, ty) in &parsed.field_types {
+        let Some(field) = field.strip_prefix(&prefix) else {
+            continue;
+        };
+        if let Some(python_type) = infer_field_python_type(expression, field, ty) {
+            return Some(python_type);
+        }
+    }
+    None
+}
+
+fn infer_field_python_type(expression: &str, field: &str, ty: &str) -> Option<String> {
+    if ty.is_empty() {
+        return None;
+    }
+    let dotted = format!(".{field}");
+    let bracketed = format!("[].{field}");
+    if !expression.contains(&dotted) && !expression.contains(&bracketed) {
+        return None;
+    }
+    let indexed =
+        expression.contains(&format!(".{field}[")) || expression.contains(&format!("[].{field}["));
+    let mojo_type = if indexed {
+        list_item_type(ty).unwrap_or(ty)
+    } else {
+        ty
+    };
+    python_type_for_mojo(mojo_type)
+}
+
+fn list_item_type(ty: &str) -> Option<&str> {
+    ty.strip_prefix("List[")?.strip_suffix(']').map(str::trim)
 }
 
 fn render_stub_text(bindings: &StubBindings) -> String {
@@ -1445,6 +1874,113 @@ def PyInit__native() -> PythonObject:
     }
 
     #[test]
+    fn infers_pythonobject_wrapper_return_types() {
+        let text = render_stub_from_source(
+            r#"
+from std.python import PythonObject
+from std.python.bindings import PythonModuleBuilder
+from std.collections import List
+
+struct Layout:
+    var shape: Shape[Self.rank]
+
+struct Array(Movable, Writable):
+    var dtype_code: Int
+    var shape: List[Int]
+
+    @staticmethod
+    def dtype_code_py(py_self: PythonObject) raises -> PythonObject:
+        var self_ptr = py_self.downcast_value_ptr[Self]()
+        return PythonObject(self_ptr[].dtype_code)
+
+    @staticmethod
+    def shape_at_py(py_self: PythonObject, index_obj: PythonObject) raises -> PythonObject:
+        var self_ptr = py_self.downcast_value_ptr[Self]()
+        var index = Int(py=index_obj)
+        return PythonObject(self_ptr[].shape[index])
+
+    @staticmethod
+    def get_scalar_py(py_self: PythonObject, index_obj: PythonObject) raises -> PythonObject:
+        if True:
+            return PythonObject(get_bool())
+        if False:
+            return PythonObject(get_i64())
+        return PythonObject(get_f64())
+
+    @staticmethod
+    def used_fast_py(py_self: PythonObject) raises -> PythonObject:
+        var self_ptr = py_self.downcast_value_ptr[Self]()
+        return PythonObject(self_ptr[].dtype_code == 1)
+
+    @staticmethod
+    def is_c_contiguous_py(py_self: PythonObject) raises -> PythonObject:
+        return PythonObject(is_c_contiguous())
+
+def is_c_contiguous() -> Bool:
+    return True
+
+def make_array() raises -> Array:
+    pass
+
+def get_bool() -> Bool:
+    return True
+
+def get_i64() -> Int64:
+    return 1
+
+def get_f64() -> Float64:
+    return 1.0
+
+def empty_ops() raises -> PythonObject:
+    var result = make_array()
+    return PythonObject(alloc=result^)
+
+def none_ops() raises -> PythonObject:
+    return PythonObject(None)
+
+def binary_op_method_ops(py_self: PythonObject, other_obj: PythonObject, op: Int) raises -> PythonObject:
+    var result = make_array()
+    return PythonObject(alloc=result^)
+
+def array_add_method_ops(py_self: PythonObject, other_obj: PythonObject) raises -> PythonObject:
+    return binary_op_method_ops(py_self, other_obj, 0)
+
+@export
+def PyInit__native() -> PythonObject:
+    var module = PythonModuleBuilder("_native")
+    _ = (
+        module.add_type[Array]("Array")
+        .def_method[array_add_method_ops]("add")
+        .def_method[Array.dtype_code_py]("dtype_code")
+        .def_method[Array.shape_at_py]("shape_at")
+        .def_method[Array.get_scalar_py]("get_scalar")
+        .def_method[Array.used_fast_py]("used_fast")
+        .def_method[Array.is_c_contiguous_py]("is_c_contiguous")
+    )
+    module.def_function[empty_ops]("empty")
+    module.def_function[none_ops]("none")
+    return module.finalize()
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            text,
+            concat!(
+                "def empty() -> Array: ...\n",
+                "def none() -> None: ...\n\n",
+                "class Array:\n",
+                "  def add(self, other_obj: object) -> Array: ...\n",
+                "  def dtype_code(self) -> int: ...\n",
+                "  def get_scalar(self, index_obj: object) -> bool | int | float: ...\n",
+                "  def is_c_contiguous(self) -> bool: ...\n",
+                "  def shape_at(self, index_obj: object) -> int: ...\n",
+                "  def used_fast(self) -> bool: ...\n",
+            )
+        );
+    }
+
+    #[test]
     fn unresolved_binding_target_is_an_error() {
         let error = render_stub_from_source(
             r#"
@@ -1603,7 +2139,7 @@ def imported_fun(value: PythonObject) raises -> PythonObject:
             concat!(
                 "def aliased_fun(value: object) -> object: ...\n\n",
                 "class Array:\n",
-                "  def dtype_code(self) -> object: ...\n",
+                "  def dtype_code(self) -> int: ...\n",
             )
         );
     }

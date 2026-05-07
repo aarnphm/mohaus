@@ -23,7 +23,11 @@ first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,
 Compiled Mojo extension targets also get adjacent generated typed `.pyi` stubs
 during `mohaus develop`, editable rebuilds, and wheel builds. The stub writer
 uses the Mojo binding declarations plus referenced `def` headers, so
-`PythonObject` becomes `object` instead of `Any`.
+`PythonObject` becomes `object` instead of `Any`, and simple `PythonObject(...)`
+wrappers are narrowed from their body expressions when the source makes the
+runtime shape clear. Set
+`[tool.mohaus] generate-stub = false` when you want to own those `.pyi` files
+manually under `python-src`.
 Use `-v`, `-vv`, or `-vvv` before or after a subcommand to print mohaus
 diagnostics and forward matching verbosity into uv/pip-backed installs.
 
