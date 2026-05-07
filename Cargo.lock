@@ -518,6 +518,8 @@ dependencies = [
  "base64",
  "flate2",
  "fs4",
+ "mohaus-mojo-bindings",
+ "mohaus-stubgen",
  "serde",
  "sha2",
  "tar",
@@ -527,6 +529,18 @@ dependencies = [
  "walkdir",
  "zip",
 ]
+
+[[package]]
+name = "mohaus-mojo-bindings"
+version = "0.1.0"
+dependencies = [
+ "mohaus-mojo-syntax",
+ "tempfile",
+]
+
+[[package]]
+name = "mohaus-mojo-syntax"
+version = "0.1.0"
 
 [[package]]
 name = "mohaus-pep517"
@@ -543,6 +557,13 @@ version = "0.1.0"
 dependencies = [
  "mohaus-core",
  "tempfile",
+]
+
+[[package]]
+name = "mohaus-stubgen"
+version = "0.1.0"
+dependencies = [
+ "mohaus-mojo-bindings",
 ]
 
 [[package]]

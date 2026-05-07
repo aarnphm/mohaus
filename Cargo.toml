@@ -2,8 +2,11 @@
 members = [
   "crates/mohaus-cli",
   "crates/mohaus-core",
+  "crates/mohaus-mojo-bindings",
+  "crates/mohaus-mojo-syntax",
   "crates/mohaus-pep517",
   "crates/mohaus-scaffold",
+  "crates/mohaus-stubgen",
 ]
 resolver = "3"
 
@@ -33,6 +36,10 @@ thiserror = "2.0"
 toml = "0.9"
 walkdir = "2.5"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+mohaus-mojo-bindings = { path = "crates/mohaus-mojo-bindings" }
+mohaus-mojo-syntax = { path = "crates/mohaus-mojo-syntax" }
+mohaus-stubgen = { path = "crates/mohaus-stubgen" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

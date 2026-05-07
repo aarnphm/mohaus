@@ -1,0 +1,15 @@
+[package]
+name = "mohaus-stubgen"
+description = "Python stub rendering for mohaus Mojo binding analysis."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mohaus-mojo-bindings.workspace = true
+
+[lints]
+workspace = true
