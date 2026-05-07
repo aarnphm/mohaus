@@ -12,6 +12,8 @@ environment.
 
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +21,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 MOJO_RUNNER = REPO_ROOT / "tests" / "parity" / "_mojo_hash_runner.mojo"
+MOJO_RUN_FLAGS_ENV = "MOHAUS_MOJO_RUN_FLAGS"
 
 
 def _rust_tree_hash(src_dir: Path) -> str:
@@ -28,8 +31,9 @@ def _rust_tree_hash(src_dir: Path) -> str:
 
 
 def _mojo_tree_hash(project_dir: Path) -> str:
+  mojo_run_flags = shlex.split(os.environ.get(MOJO_RUN_FLAGS_ENV, ""))
   result = subprocess.run(
-    ["mojo", "run", "-I", str(REPO_ROOT / "src"), str(MOJO_RUNNER), str(project_dir)],
+    ["mojo", "run", *mojo_run_flags, "-I", str(REPO_ROOT / "src"), str(MOJO_RUNNER), str(project_dir)],
     check=True,
     capture_output=True,
     text=True,

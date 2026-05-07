@@ -120,7 +120,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            mojo_flags: "--target-cpu=x86-64"
+          - os: macos-latest
+            mojo_flags: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
@@ -143,13 +147,21 @@ jobs:
           mojo package src/mohaus_scaffold -o target/mojopkg/mohaus_scaffold.mojopkg
           mojo package src/mohaus_stubgen -o target/mojopkg/mohaus_stubgen.mojopkg
       - name: run mojo unit tests
+        env:
+          MOHAUS_MOJO_RUN_FLAGS: ${{ matrix.mojo_flags }}
         run: |
-          mojo run -I src src/tests/test_toolchain.mojo
-          mojo run -I src src/tests/test_sha256_kat.mojo
-          mojo run -I src src/tests/test_hashing.mojo
-          mojo run -I src src/tests/test_scaffold.mojo
-          mojo run -I src src/tests/test_stubgen.mojo
+          mojo_flags=()
+          if [ -n "${MOHAUS_MOJO_RUN_FLAGS}" ]; then
+            read -r -a mojo_flags <<< "${MOHAUS_MOJO_RUN_FLAGS}"
+          fi
+          mojo run "${mojo_flags[@]}" -I src src/tests/test_toolchain.mojo
+          mojo run "${mojo_flags[@]}" -I src src/tests/test_sha256_kat.mojo
+          mojo run "${mojo_flags[@]}" -I src src/tests/test_hashing.mojo
+          mojo run "${mojo_flags[@]}" -I src src/tests/test_scaffold.mojo
+          mojo run "${mojo_flags[@]}" -I src src/tests/test_stubgen.mojo
       - name: parity diff against rust source_hash
+        env:
+          MOHAUS_MOJO_RUN_FLAGS: ${{ matrix.mojo_flags }}
         run: |
           uv pip install --system -e .
           python tests/parity/run_source_hash_parity.py
