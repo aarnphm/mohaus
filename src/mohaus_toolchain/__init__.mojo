@@ -56,7 +56,7 @@ def _mojo_candidates() -> List[String]:
     var rest = _path_and_modular_home_candidates()
     for candidate in rest:
         _push_unique_candidate(candidates, String(candidate))
-    return candidates
+    return candidates^
 
 
 def _path_and_modular_home_candidates() -> List[String]:
@@ -78,7 +78,7 @@ def _path_and_modular_home_candidates() -> List[String]:
         if exists(candidate):
             _push_unique_candidate(candidates, _normalize_mojo_candidate(candidate))
 
-    return candidates
+    return candidates^
 
 
 def _normalize_mojo_candidate(candidate: String) -> String:
