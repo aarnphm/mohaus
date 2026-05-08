@@ -30,6 +30,9 @@ runtime shape clear. Set
 manually under `python-src`.
 Use `-v`, `-vv`, or `-vvv` before or after a subcommand to print mohaus
 diagnostics and forward matching verbosity into uv/pip-backed installs.
+Use `mohaus develop -- <uv pip install args>` to pass installer controls
+through to the editable install, for example `--python .venv/bin/python`,
+`--refresh-package mohaus`, or `--reinstall-package <name>`.
 
 ```bash
 mohaus init monpy ~/workspace/monpy

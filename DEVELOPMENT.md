@@ -139,6 +139,13 @@ The default install is Rust-only:
 uv pip install -e .
 ```
 
+`mohaus develop` prefers `uv pip install` and accepts installer passthrough
+after `--`, which is useful when a workflow must target a specific venv or
+force a cache refresh:
+```bash
+mohaus develop -- --python .venv/bin/python --refresh-package mohaus
+```
+
 Adding the optional `mojo` extra pulls in the workspace's mohaus-mojo
 sibling, which ships the compiled `.mojopkg` parity ports:
 ```bash
@@ -158,6 +165,7 @@ mohaus add httpx                         # uv add to [project.dependencies]
 mohaus add pytest --group dev            # uv add --group dev
 mohaus add 'mojo==1.0.0b2.devXXXX' --build-system   # edit [build-system].requires
 mohaus add --mojo vendor/some_pkg        # append to [tool.mohaus.mojo-include-paths]
+mohaus add numpy -- --prerelease=allow   # forward trailing uv add args
 ```
 
 Lint + format:

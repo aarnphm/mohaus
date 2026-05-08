@@ -113,6 +113,10 @@ enum CommandKind {
         /// Force non-isolated install, useful for nightly/local Mojo.
         #[arg(long)]
         no_build_isolation: bool,
+
+        /// Forward extra args to the installer after mohaus' editable args.
+        #[arg(last = true)]
+        passthrough: Vec<String>,
     },
 
     /// Build a source distribution.
@@ -169,7 +173,10 @@ fn run(cli: Cli) -> Result<()> {
         CommandKind::New { name } => new_project(name, verbosity),
         CommandKind::Completions { shell } => completions(shell),
         CommandKind::Build { release, out } => build(release, out, verbosity),
-        CommandKind::Develop { no_build_isolation } => develop(no_build_isolation, verbosity),
+        CommandKind::Develop {
+            no_build_isolation,
+            passthrough,
+        } => develop(no_build_isolation, passthrough, verbosity),
         CommandKind::Sdist { out } => sdist(out, verbosity),
         CommandKind::Watch { interval_ms } => watch(interval_ms, verbosity),
         CommandKind::Add {
@@ -264,7 +271,7 @@ fn build(release: bool, out: PathBuf, verbosity: Verbosity) -> Result<()> {
     Ok(())
 }
 
-fn develop(no_build_isolation: bool, verbosity: Verbosity) -> Result<()> {
+fn develop(no_build_isolation: bool, passthrough: Vec<String>, verbosity: Verbosity) -> Result<()> {
     let project_dir = env::current_dir().context("could not read current directory")?;
     let config = ProjectConfig::load(&project_dir)?;
     let disable_isolation = no_build_isolation || should_disable_isolation(&config);
@@ -281,6 +288,7 @@ fn develop(no_build_isolation: bool, verbosity: Verbosity) -> Result<()> {
     run_editable_install(
         disable_isolation,
         editable_mojo_requirement(&config),
+        passthrough,
         verbosity,
     )
 }
@@ -489,6 +497,7 @@ fn editable_mojo_requirement(config: &ProjectConfig) -> Option<OsString> {
 fn run_editable_install(
     no_build_isolation: bool,
     mojo_requirement: Option<OsString>,
+    passthrough: Vec<String>,
     verbosity: Verbosity,
 ) -> Result<()> {
     let self_wheelhouse = self_wheelhouse()?;
@@ -504,6 +513,7 @@ fn run_editable_install(
             self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
             self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
             mojo_requirement.clone(),
+            &passthrough,
         );
         return run_status(uv, args, verbosity);
     }
@@ -517,6 +527,7 @@ fn run_editable_install(
         self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
         self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
         mojo_requirement,
+        &passthrough,
     );
     run_status(python, args, verbosity)
 }
@@ -527,6 +538,7 @@ fn uv_pip_install_args(
     self_find_links: Option<OsString>,
     self_wheel: Option<OsString>,
     mojo_requirement: Option<OsString>,
+    passthrough: &[String],
 ) -> Vec<OsString> {
     let mut args = verbosity.flag_args();
     args.push(OsString::from("pip"));
@@ -535,6 +547,7 @@ fn uv_pip_install_args(
         self_find_links,
         self_wheel,
         mojo_requirement,
+        passthrough,
     ));
     args
 }
@@ -545,6 +558,7 @@ fn python_pip_install_args(
     self_find_links: Option<OsString>,
     self_wheel: Option<OsString>,
     mojo_requirement: Option<OsString>,
+    passthrough: &[String],
 ) -> Vec<OsString> {
     let mut args = vec![OsString::from("-m"), OsString::from("pip")];
     args.extend(verbosity.flag_args());
@@ -553,6 +567,7 @@ fn python_pip_install_args(
         self_find_links,
         self_wheel,
         mojo_requirement,
+        passthrough,
     ));
     args
 }
@@ -562,6 +577,7 @@ fn editable_install_args(
     self_find_links: Option<OsString>,
     self_wheel: Option<OsString>,
     mojo_requirement: Option<OsString>,
+    passthrough: &[String],
 ) -> Vec<OsString> {
     let mut args = vec![OsString::from("install")];
     if let Some(wheel) = self_wheel {
@@ -578,6 +594,9 @@ fn editable_install_args(
     }
     if no_build_isolation {
         args.push(OsString::from("--no-build-isolation"));
+    }
+    for value in passthrough {
+        args.push(OsString::from(value.as_str()));
     }
     args
 }
@@ -810,6 +829,32 @@ mod tests {
     }
 
     #[test]
+    fn develop_passes_through_installer_args_after_separator() -> anyhow::Result<()> {
+        let cli = crate::Cli::try_parse_from([
+            "mohaus",
+            "develop",
+            "--no-build-isolation",
+            "--",
+            "--refresh-package",
+            "mohaus",
+        ])?;
+        match cli.command {
+            crate::CommandKind::Develop {
+                no_build_isolation,
+                passthrough,
+            } => {
+                assert!(no_build_isolation);
+                assert_eq!(
+                    passthrough,
+                    vec!["--refresh-package".to_string(), "mohaus".to_string()]
+                );
+            }
+            other => panic!("expected Develop, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn verbose_counter_parses_before_subcommand() -> anyhow::Result<()> {
         let cli = crate::Cli::try_parse_from(["mohaus", "-vvv", "build"])?;
 
@@ -878,6 +923,7 @@ mod tests {
             Some(OsString::from("/tmp/mohaus-wheelhouse")),
             None,
             None,
+            &[],
         );
 
         assert_eq!(
@@ -895,7 +941,7 @@ mod tests {
 
     #[test]
     fn uv_pip_install_args_forward_repeated_verbose_flags_before_pip() {
-        let args = crate::uv_pip_install_args(Verbosity::new(3), false, None, None, None);
+        let args = crate::uv_pip_install_args(Verbosity::new(3), false, None, None, None, &[]);
 
         assert_eq!(
             args,
@@ -905,7 +951,7 @@ mod tests {
 
     #[test]
     fn python_pip_install_args_forward_repeated_verbose_flags_before_install() {
-        let args = crate::python_pip_install_args(Verbosity::new(2), true, None, None, None);
+        let args = crate::python_pip_install_args(Verbosity::new(2), true, None, None, None, &[]);
 
         assert_eq!(
             args,
@@ -925,7 +971,7 @@ mod tests {
 
     #[test]
     fn editable_install_args_keep_no_build_isolation_escape_hatch() {
-        let args = crate::editable_install_args(true, None, None, None);
+        let args = crate::editable_install_args(true, None, None, None, &[]);
 
         assert_eq!(
             args,
@@ -940,6 +986,7 @@ mod tests {
             Some(OsString::from("/tmp/mohaus-wheelhouse")),
             Some(OsString::from("/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl")),
             None,
+            &[],
         );
 
         assert_eq!(
@@ -963,6 +1010,7 @@ mod tests {
             Some(OsString::from("/tmp/mohaus-wheelhouse")),
             Some(OsString::from("/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl")),
             Some(OsString::from("mojo==0.26.2.0")),
+            &[],
         );
 
         assert_eq!(
@@ -975,6 +1023,38 @@ mod tests {
                 ".",
                 "--find-links",
                 "/tmp/mohaus-wheelhouse",
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn editable_install_args_append_passthrough_after_owned_args() {
+        let passthrough = vec![
+            "--reinstall".to_string(),
+            "--refresh-package".to_string(),
+            "mohaus".to_string(),
+        ];
+        let args = crate::editable_install_args(
+            true,
+            Some(OsString::from("/tmp/mohaus-wheelhouse")),
+            None,
+            None,
+            &passthrough,
+        );
+
+        assert_eq!(
+            args,
+            [
+                "install",
+                "-e",
+                ".",
+                "--find-links",
+                "/tmp/mohaus-wheelhouse",
+                "--no-build-isolation",
+                "--reinstall",
+                "--refresh-package",
+                "mohaus",
             ]
             .map(OsString::from)
         );
