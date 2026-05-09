@@ -384,8 +384,8 @@ mod tests {
         assert_eq!(normalize_mojo_version_token("Mojo 26.2.0 (abcd)"), "26.2.0");
         assert_eq!(normalize_mojo_version_token("0.26.2.0"), "26.2.0");
         assert_eq!(
-            normalize_mojo_version_token("Mojo 1.0.0b2.dev2026050306 (dc0cf636)"),
-            "1.0.0b2.dev2026050306"
+            normalize_mojo_version_token("Mojo 1.0.0b2.dev2026050805 (dc0cf636)"),
+            "1.0.0b2.dev2026050805"
         );
     }
 
@@ -416,7 +416,7 @@ mod tests {
         let stable = root.path().join("stable").join("mojo");
         let nightly = root.path().join("nightly").join("mojo");
         write_fake_mojo(&stable, "Mojo 0.26.2.0 (d627decc)");
-        write_fake_mojo(&nightly, "Mojo 1.0.0b2.dev2026050306 (abc123)");
+        write_fake_mojo(&nightly, "Mojo 1.0.0b2.dev2026050805 (abc123)");
         let expected = MojoVersion::parse("1.0.0.dev0").unwrap();
 
         let error = super::resolve_verified_mojo_from_candidates(

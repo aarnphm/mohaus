@@ -4,7 +4,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -24,6 +24,7 @@ use notify_debouncer_mini::new_debouncer;
 
 const SELF_FIND_LINKS_ENV: &str = "MOHAUS_SELF_FIND_LINKS";
 const SELF_WHEEL_ENV: &str = "MOHAUS_SELF_WHEEL";
+const VENDORED_MOJO_INCLUDE_MARKER_BODY: &str = "mohaus mojo include root\n";
 
 #[derive(Debug)]
 struct SelfWheelhouse {
@@ -134,7 +135,8 @@ enum CommandKind {
     },
 
     /// Add a dependency to pyproject.toml. Defaults to a Python package via
-    /// `uv add`. With `--mojo` adds an entry to `tool.mohaus.mojo-include-paths`.
+    /// `uv add`. With `--mojo` adds an entry to `tool.mohaus.mojo-include-paths`
+    /// and tags vendored include roots for automatic discovery.
     Add {
         /// Package specifier. Python form: `name`, `name==1.2`, `name @ url`,
         /// or a local `./path`. Mojo form: a local include path, `owner/repo`,
@@ -403,6 +405,7 @@ fn add_mojo_dependency(
         ensure_git_mojo_checkout(url, checkout_dir, verbosity)?;
     }
     let include_path = resolved.include_path();
+    tag_vendor_mojo_include(project_dir, include_path, verbosity)?;
     log(verbosity, 1, || {
         format!(
             "adding Mojo include path {} to {}",
@@ -463,6 +466,49 @@ fn ensure_git_mojo_checkout(url: &str, checkout_dir: &Path, verbosity: Verbosity
             checkout_dir.display()
         )
     })
+}
+
+fn tag_vendor_mojo_include(
+    project_dir: &Path,
+    include_path: &str,
+    verbosity: Verbosity,
+) -> Result<()> {
+    let Some(include_dir) = immediate_vendor_include_dir(project_dir, include_path) else {
+        return Ok(());
+    };
+    if !include_dir.is_dir() {
+        return Ok(());
+    }
+    let marker = include_dir.join(mohaus_core::config::VENDORED_MOJO_INCLUDE_MARKER);
+    if marker.exists() {
+        return Ok(());
+    }
+    fs::write(&marker, VENDORED_MOJO_INCLUDE_MARKER_BODY)
+        .with_context(|| format!("failed to write {}", marker.display()))?;
+    log(verbosity, 1, || {
+        format!("tagged Mojo vendor include root {}", include_dir.display())
+    });
+    Ok(())
+}
+
+fn immediate_vendor_include_dir(project_dir: &Path, include_path: &str) -> Option<PathBuf> {
+    let include_path = Path::new(include_path);
+    if include_path.is_absolute() {
+        return None;
+    }
+    let mut components = include_path.components();
+    match components.next()? {
+        Component::Normal(value) if value == "vendor" => {}
+        _ => return None,
+    }
+    let child = match components.next()? {
+        Component::Normal(value) => value,
+        _ => return None,
+    };
+    if components.next().is_some() {
+        return None;
+    }
+    Some(project_dir.join("vendor").join(Path::new(child)))
 }
 
 fn watch(interval_ms: u64, verbosity: Verbosity) -> Result<()> {
@@ -946,6 +992,12 @@ mod tests {
         crate::add_mojo_dependency(project, "vendor/some_pkg", false, Verbosity::default())?;
         let updated = fs::read_to_string(project.join("pyproject.toml"))?;
         assert!(updated.contains("\"vendor/some_pkg\","));
+        assert!(
+            project
+                .join("vendor/some_pkg")
+                .join(mohaus_core::config::VENDORED_MOJO_INCLUDE_MARKER)
+                .is_file()
+        );
         Ok(())
     }
 
@@ -975,6 +1027,12 @@ mod tests {
 
         let updated = fs::read_to_string(project.join("pyproject.toml"))?;
         assert!(updated.contains("\"vendor/NuMojo\","));
+        assert!(
+            project
+                .join("vendor/NuMojo")
+                .join(mohaus_core::config::VENDORED_MOJO_INCLUDE_MARKER)
+                .is_file()
+        );
         Ok(())
     }
 

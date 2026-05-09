@@ -134,6 +134,9 @@ fn write_template(path: &Path, template: &str, replacements: &[(&str, String)]) 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+    use std::fs;
+
+    use mohaus_core::DEFAULT_MOJO_VERSION;
     use mohaus_core::config::ProjectConfig;
     use mohaus_core::wheel::metadata_text;
     use tempfile::TempDir;
@@ -156,7 +159,17 @@ mod tests {
         assert_eq!(config.modules[0].name.as_str(), "acme._native");
         assert!(config.generate_stub);
         assert!(destination.join("LICENSE").is_file());
-        assert!(destination.join(".mojo-version").is_file());
+        assert_eq!(
+            fs::read_to_string(destination.join(".mojo-version")).unwrap(),
+            DEFAULT_MOJO_VERSION
+        );
+        let pyproject = fs::read_to_string(destination.join("pyproject.toml")).unwrap();
+        assert!(pyproject.contains(&format!("\"mojo=={DEFAULT_MOJO_VERSION}\"")));
+        assert!(!pyproject.contains("mojo-src = \"src\""));
+        assert!(!pyproject.contains("python-src = \"python\""));
+        let gitignore = fs::read_to_string(destination.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("/benches/\n"));
+        assert!(gitignore.contains("/vendor/\n"));
     }
 
     #[test]

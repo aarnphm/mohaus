@@ -41,6 +41,14 @@
         ];
       };
 
+    rustPlatform = pkgs: let
+      rust = rustToolchain pkgs;
+    in
+      pkgs.makeRustPlatform {
+        cargo = rust;
+        rustc = rust;
+      };
+
     commonPackages = pkgs: [
       (rustToolchain pkgs)
       pkgs.alejandra
@@ -63,7 +71,75 @@
         }
       }/bin/${name}";
     };
+
+    mkMohausPackage = pkgs: let
+      python = pkgs.python311;
+      rust = rustPlatform pkgs;
+    in
+      python.pkgs.buildPythonApplication {
+        pname = "mohaus";
+        version = "0.1.0";
+        pyproject = true;
+
+        src = self;
+
+        cargoDeps = rust.importCargoLock {
+          lockFile = ./Cargo.lock;
+        };
+
+        nativeBuildInputs = [
+          rust.cargoSetupHook
+        ];
+
+        build-system = [
+          rust.maturinBuildHook
+        ];
+
+        env = {
+          PYO3_PYTHON = "${python}/bin/python";
+        };
+
+        postInstall = ''
+          mkdir -p "$out/share/mohaus/wheels"
+          cp dist/*.whl "$out/share/mohaus/wheels/"
+        '';
+
+        makeWrapperArgs = [
+          "--prefix"
+          "PATH"
+          ":"
+          (pkgs.lib.makeBinPath [
+            pkgs.git
+            pkgs.uv
+            python
+          ])
+          "--set-default"
+          "MOHAUS_SELF_FIND_LINKS"
+          "$out/share/mohaus/wheels"
+        ];
+
+        pythonImportsCheck = [
+          "mohaus"
+          "mohaus.mohaus_pep517"
+        ];
+
+        meta = {
+          description = "Maturin-shaped build backend and CLI for mixed Python and Mojo libraries";
+          homepage = "https://github.com/aarnphm/mohaus";
+          license = pkgs.lib.licenses.asl20;
+          mainProgram = "mohaus";
+        };
+      };
   in {
+    packages = forAllSystems (
+      _system: pkgs: let
+        mohaus = mkMohausPackage pkgs;
+      in {
+        inherit mohaus;
+        default = mohaus;
+      }
+    );
+
     devShells = forAllSystems (
       system: pkgs: let
         python = pkgs.python311;
@@ -267,7 +343,17 @@
     );
 
     apps = forAllSystems (
-      _system: pkgs: {
+      system: pkgs: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.mohaus}/bin/mohaus";
+        };
+
+        mohaus = {
+          type = "app";
+          program = "${self.packages.${system}.mohaus}/bin/mohaus";
+        };
+
         fmt = mkCommandApp pkgs "mohaus-fmt" ''
           cargo fmt
           uvx ruff format --config "indent-width=2" --config "line-length=119" --config "preview=true"

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,6 +7,10 @@ use serde::Deserialize;
 use crate::error::{MohausError, Result};
 
 const RESERVED_MOJO_FLAG_PREFIXES: &[&str] = &["-o", "--output", "-I", "--include", "--emit"];
+const VENDORED_MOJO_DIR: &str = "vendor";
+
+/// Marker file that opts a vendored directory into automatic Mojo include paths.
+pub const VENDORED_MOJO_INCLUDE_MARKER: &str = ".mohaus-mojo-include";
 
 /// Validated Python distribution name.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -271,7 +276,8 @@ impl ProjectConfig {
         let generate_stub = tool.generate_stub.unwrap_or(true);
         let mojo_flags = tool.mojo_flags.unwrap_or_default();
         validate_mojo_flags(&mojo_flags)?;
-        let mojo_include_paths = tool.mojo_include_paths.unwrap_or_default();
+        let mojo_include_paths =
+            resolve_mojo_include_paths(&project_dir, tool.mojo_include_paths.unwrap_or_default())?;
 
         let mojo_version_path = project_dir.join(".mojo-version");
         let mojo_version = match fs::read_to_string(&mojo_version_path) {
@@ -582,6 +588,56 @@ fn readme_content_type_for_path(path: &Path) -> String {
     }
 }
 
+fn resolve_mojo_include_paths(
+    project_dir: &Path,
+    configured_paths: Vec<PathBuf>,
+) -> Result<Vec<PathBuf>> {
+    let mut paths = configured_paths;
+    paths.extend(discover_tagged_vendor_include_paths(project_dir)?);
+    dedup_mojo_include_paths(&mut paths);
+    Ok(paths)
+}
+
+fn discover_tagged_vendor_include_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
+    let vendor_dir = project_dir.join(VENDORED_MOJO_DIR);
+    let entries = match fs::read_dir(&vendor_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(MohausError::ReadFile {
+                path: vendor_dir,
+                source,
+            });
+        }
+    };
+
+    let mut include_paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| MohausError::ReadFile {
+            path: vendor_dir.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_dir() && path.join(VENDORED_MOJO_INCLUDE_MARKER).is_file() {
+            include_paths.push(PathBuf::from(VENDORED_MOJO_DIR).join(entry.file_name()));
+        }
+    }
+    include_paths.sort();
+    Ok(include_paths)
+}
+
+fn dedup_mojo_include_paths(paths: &mut Vec<PathBuf>) {
+    let mut seen = BTreeSet::new();
+    paths.retain(|path| seen.insert(mojo_include_path_key(path)));
+}
+
+fn mojo_include_path_key(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[derive(Debug, Deserialize)]
 struct RawTool {
     mohaus: Option<RawMohaus>,
@@ -670,10 +726,13 @@ pub fn normalize_mojo_version_token(value: &str) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
-    use crate::config::{ModuleName, MojoVersion, PackageName, ProjectConfig};
+    use crate::config::{
+        ModuleName, MojoVersion, PackageName, ProjectConfig, VENDORED_MOJO_INCLUDE_MARKER,
+    };
     use crate::error::MohausError;
 
     fn write_pyproject(root: &std::path::Path, body: &str) {
@@ -701,8 +760,8 @@ mod tests {
 
     #[test]
     fn mojo_version_preserves_nightly_prerelease_pin() {
-        let version = MojoVersion::parse("1.0.0b2.dev2026050306").unwrap();
-        assert_eq!(version.normalized(), "1.0.0b2.dev2026050306");
+        let version = MojoVersion::parse("1.0.0b2.dev2026050805").unwrap();
+        assert_eq!(version.normalized(), "1.0.0b2.dev2026050805");
     }
 
     #[test]
@@ -780,6 +839,67 @@ mojo-flags = ["-O3", "-debug-level=full"]
     }
 
     #[test]
+    fn tagged_vendor_dirs_extend_mojo_include_paths() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(".mojo-version"), "1.0.0b2.dev2026050805").unwrap();
+        let vendor = root.path().join("vendor").join("NuMojo");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(
+            vendor.join(VENDORED_MOJO_INCLUDE_MARKER),
+            "mohaus mojo include root\n",
+        )
+        .unwrap();
+        write_pyproject(
+            root.path(),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        );
+
+        let config = ProjectConfig::load(root.path()).unwrap();
+        assert_eq!(
+            config.mojo_include_paths,
+            vec![PathBuf::from("vendor/NuMojo")]
+        );
+    }
+
+    #[test]
+    fn tagged_vendor_include_paths_do_not_duplicate_configured_paths() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(".mojo-version"), "1.0.0b2.dev2026050805").unwrap();
+        let vendor = root.path().join("vendor").join("NuMojo");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(
+            vendor.join(VENDORED_MOJO_INCLUDE_MARKER),
+            "mohaus mojo include root\n",
+        )
+        .unwrap();
+        write_pyproject(
+            root.path(),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+mojo-include-paths = ["vendor/NuMojo"]
+"#,
+        );
+
+        let config = ProjectConfig::load(root.path()).unwrap();
+        assert_eq!(
+            config.mojo_include_paths,
+            vec![PathBuf::from("vendor/NuMojo")]
+        );
+    }
+
+    #[test]
     fn generate_stub_defaults_to_true() {
         let root = TempDir::new().unwrap();
         fs::write(root.path().join(".mojo-version"), "0.26.2.0").unwrap();
@@ -798,6 +918,34 @@ module-name = "demo._native"
         let config = ProjectConfig::load(root.path()).unwrap();
 
         assert!(config.generate_stub);
+    }
+
+    #[test]
+    fn source_roots_default_to_src_and_python() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        write_pyproject(
+            root.path(),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        );
+
+        let config = ProjectConfig::load(root.path()).unwrap();
+
+        assert_eq!(config.mojo_src, std::path::PathBuf::from("src"));
+        assert_eq!(config.python_src, std::path::PathBuf::from("python"));
+        assert_eq!(config.mojo_source_root(), root.path().join("src"));
+        assert_eq!(config.python_source_root(), root.path().join("python"));
+        assert_eq!(
+            config.modules[0].entry,
+            std::path::PathBuf::from("src/lib.mojo")
+        );
     }
 
     #[test]

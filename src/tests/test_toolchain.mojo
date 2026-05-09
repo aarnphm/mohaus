@@ -9,15 +9,15 @@ def test_normalize_cli_version() raises:
     assert_equal(normalize_mojo_version_token("Mojo 26.2.0 (abcd)"), "26.2.0")
     assert_equal(normalize_mojo_version_token("0.26.2.0"), "26.2.0")
     assert_equal(
-        normalize_mojo_version_token("Mojo 1.0.0b2.dev2026050306 (dc0cf636)"),
-        "1.0.0b2.dev2026050306",
+        normalize_mojo_version_token("Mojo 1.0.0b2.dev2026050805 (dc0cf636)"),
+        "1.0.0b2.dev2026050805",
     )
 
 
 def test_normalize_preserves_nightly() raises:
     assert_equal(
-        normalize_mojo_version_token("1.0.0b2.dev2026050306"),
-        "1.0.0b2.dev2026050306",
+        normalize_mojo_version_token("1.0.0b2.dev2026050805"),
+        "1.0.0b2.dev2026050805",
     )
 
 

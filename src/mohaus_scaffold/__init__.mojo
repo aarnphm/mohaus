@@ -15,7 +15,7 @@ from std.os import listdir, makedirs
 from std.os.path import isdir
 from std.pathlib import Path
 
-comptime DEFAULT_MOJO_VERSION = "1.0.0b2.dev2026050306"
+comptime DEFAULT_MOJO_VERSION = "1.0.0b2.dev2026050805"
 
 
 @fieldwise_init

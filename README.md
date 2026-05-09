@@ -14,7 +14,7 @@ my_project/
 └── .mojo-version
 ```
 
-Generated projects currently pin nightly `mojo==1.0.0b2.dev2026050306` and add
+Generated projects currently pin nightly `mojo==1.0.0b2.dev2026050805` and add
 the Modular nightly uv index so isolated `uv build` can resolve the compiler.
 When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
 wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
@@ -35,7 +35,10 @@ through to the editable install, for example `--python .venv/bin/python`,
 `--refresh-package mohaus`, or `--reinstall-package <name>`.
 Use `mohaus add --mojo <path>` for local Mojo include roots, or
 `mohaus add --mojo github:owner/repo` to clone a git dependency into
-`vendor/<repo>` and append that checkout to `mojo-include-paths`.
+`vendor/<repo>` and append that checkout to `mojo-include-paths`. Vendored
+Mojo include roots are also tagged with `.mohaus-mojo-include`; any immediate
+`vendor/*` directory carrying that marker is automatically added to the loaded
+include path set.
 
 ```bash
 mohaus init monpy ~/workspace/monpy

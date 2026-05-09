@@ -3,11 +3,11 @@
 # unit tests; this test only proves the Mojo path renders the templates and
 # round-trips into a parseable project.
 
-from mohaus_scaffold import ScaffoldOptions, scaffold_project
+from mohaus_scaffold import DEFAULT_MOJO_VERSION, ScaffoldOptions, scaffold_project
 from std.os import getenv
 from std.os.path import isfile
 from std.pathlib import Path
-from std.testing import assert_true
+from std.testing import assert_equal, assert_true
 
 
 def _scratch_dir(suffix: String) -> Path:
@@ -24,6 +24,8 @@ def test_scaffold_writes_expected_files() raises:
     assert_true(isfile(String(destination.joinpath("python").joinpath("acme").joinpath("__init__.py"))))
     assert_true(isfile(String(destination.joinpath("LICENSE"))))
     assert_true(isfile(String(destination.joinpath(".mojo-version"))))
+    assert_equal(destination.joinpath(".mojo-version").read_text(), DEFAULT_MOJO_VERSION)
+    assert_true(destination.joinpath("pyproject.toml").read_text().contains("mojo==" + DEFAULT_MOJO_VERSION))
 
 
 def main() raises:
