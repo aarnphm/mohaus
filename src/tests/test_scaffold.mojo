@@ -23,10 +23,16 @@ def test_scaffold_writes_expected_files() raises:
     assert_true(isfile(String(destination.joinpath("src").joinpath("lib.mojo"))))
     assert_true(isfile(String(destination.joinpath("python").joinpath("acme").joinpath("__init__.py"))))
     assert_true(isfile(String(destination.joinpath("LICENSE"))))
+    assert_true(isfile(String(destination.joinpath(".gitattributes"))))
     assert_true(isfile(String(destination.joinpath(".mojo-version"))))
     assert_equal(destination.joinpath(".mojo-version").read_text(), DEFAULT_MOJO_VERSION)
     var pyproject = destination.joinpath("pyproject.toml").read_text()
     assert_true(len(pyproject.split("mojo==" + DEFAULT_MOJO_VERSION)) > 1)
+    var gitignore = destination.joinpath(".gitignore").read_text()
+    assert_true(len(gitignore.split("/vendor/")) > 1)
+    assert_true(len(gitignore.split("/benches/")) == 1)
+    var gitattributes = destination.joinpath(".gitattributes").read_text()
+    assert_true(len(gitattributes.split("/vendor/** linguist-vendored")) > 1)
 
 
 def main() raises:

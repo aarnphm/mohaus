@@ -11,7 +11,9 @@ my_project/
 ├── src/lib.mojo
 ├── python/my_project/
 ├── pyproject.toml
-└── .mojo-version
+├── .mojo-version
+├── .gitignore
+└── .gitattributes
 ```
 
 Generated projects currently pin nightly `mojo==1.0.0b2.dev2026050805` and add

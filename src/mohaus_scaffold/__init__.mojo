@@ -113,6 +113,11 @@ def scaffold_project(options: ScaffoldOptions) raises:
     )
     _write_file(
         dest_str,
+        ".gitattributes",
+        _render(_read_template(options.templates_dir, "gitattributes.tmpl"), replacements),
+    )
+    _write_file(
+        dest_str,
         "LICENSE",
         _render(_read_template(options.templates_dir, "LICENSE.tmpl"), replacements),
     )

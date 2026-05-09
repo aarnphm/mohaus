@@ -13,6 +13,7 @@ const LIB_MOJO_TEMPLATE: &str = include_str!("templates/lib.mojo.tmpl");
 const PY_INIT_TEMPLATE: &str = include_str!("templates/__init__.py.tmpl");
 const README_TEMPLATE: &str = include_str!("templates/README.md.tmpl");
 const GITIGNORE_TEMPLATE: &str = include_str!("templates/gitignore.tmpl");
+const GITATTRIBUTES_TEMPLATE: &str = include_str!("templates/gitattributes.tmpl");
 const LICENSE_TEMPLATE: &str = include_str!("templates/LICENSE.tmpl");
 
 /// Options for project scaffolding.
@@ -74,6 +75,11 @@ pub fn scaffold_project(options: &ScaffoldOptions) -> Result<()> {
     write_template(
         &options.destination.join(".gitignore"),
         GITIGNORE_TEMPLATE,
+        &replacements,
+    )?;
+    write_template(
+        &options.destination.join(".gitattributes"),
+        GITATTRIBUTES_TEMPLATE,
         &replacements,
     )?;
     write_template(
@@ -168,8 +174,10 @@ mod tests {
         assert!(!pyproject.contains("mojo-src = \"src\""));
         assert!(!pyproject.contains("python-src = \"python\""));
         let gitignore = fs::read_to_string(destination.join(".gitignore")).unwrap();
-        assert!(gitignore.contains("/benches/\n"));
+        assert!(!gitignore.contains("/benches/\n"));
         assert!(gitignore.contains("/vendor/\n"));
+        let gitattributes = fs::read_to_string(destination.join(".gitattributes")).unwrap();
+        assert!(gitattributes.contains("/vendor/** linguist-vendored\n"));
     }
 
     #[test]
