@@ -165,6 +165,7 @@ mohaus add httpx                         # uv add to [project.dependencies]
 mohaus add pytest --group dev            # uv add --group dev
 mohaus add 'mojo==1.0.0b2.devXXXX' --build-system   # edit [build-system].requires
 mohaus add --mojo vendor/some_pkg        # append to [tool.mohaus.mojo-include-paths]
+mohaus add --mojo github:Mojo-Numerics-and-Algorithms-group/NuMojo  # clone into vendor/NuMojo + append -I path
 mohaus add numpy -- --prerelease=allow   # forward trailing uv add args
 ```
 
@@ -370,7 +371,7 @@ We never store a PyPI token in CI secrets.
 | Build mohaus wheel | `maturin build --release --out dist` |
 | Build mohaus-mojo wheel | see "packaging the mojo parity ports" |
 | Add Python dep | `mohaus add <spec>` |
-| Add Mojo dep | `mohaus add --mojo <path>` |
+| Add Mojo dep | `mohaus add --mojo <path>` or `mohaus add --mojo github:owner/repo` |
 
 ## related plans
 

@@ -134,16 +134,14 @@ enum CommandKind {
     },
 
     /// Add a dependency to pyproject.toml. Defaults to a Python package via
-    /// `uv add`. With `--mojo` adds an entry to `tool.mohaus.mojo-include-paths`
-    /// (or `tool.mohaus.mojo-dependencies` when the spec is a remote pin).
+    /// `uv add`. With `--mojo` adds an entry to `tool.mohaus.mojo-include-paths`.
     Add {
         /// Package specifier. Python form: `name`, `name==1.2`, `name @ url`,
-        /// or a local `./path`. Mojo form: a path to a `.mojopkg` file or a
-        /// directory containing one.
+        /// or a local `./path`. Mojo form: a local include path, `owner/repo`,
+        /// `github:owner/repo`, or a git URL.
         spec: String,
 
-        /// Treat the spec as a Mojo package. Adds it to
-        /// `tool.mohaus.mojo-include-paths`.
+        /// Treat the spec as a Mojo package. Git specs are cloned into vendor/.
         #[arg(long)]
         mojo: bool,
 
@@ -397,17 +395,74 @@ fn add_mojo_dependency(
         mohaus_core::pyproject_edit::add_build_system_requirement(&pyproject, spec)?;
         return Ok(());
     }
-    let resolved = mohaus_core::pyproject_edit::resolve_mojo_include(project_dir, spec)?;
+    let resolved = mohaus_core::pyproject_edit::resolve_mojo_dependency(project_dir, spec)?;
+    if let mohaus_core::pyproject_edit::ResolvedMojoDependency::Git {
+        url, checkout_dir, ..
+    } = &resolved
+    {
+        ensure_git_mojo_checkout(url, checkout_dir, verbosity)?;
+    }
+    let include_path = resolved.include_path();
     log(verbosity, 1, || {
         format!(
             "adding Mojo include path {} to {}",
-            resolved,
+            include_path,
             pyproject.display()
         )
     });
-    mohaus_core::pyproject_edit::add_mojo_include_path(&pyproject, &resolved)?;
-    println!("added mojo include path: {resolved}");
+    mohaus_core::pyproject_edit::add_mojo_include_path(&pyproject, include_path)?;
+    println!("added mojo include path: {include_path}");
     Ok(())
+}
+
+fn ensure_git_mojo_checkout(url: &str, checkout_dir: &Path, verbosity: Verbosity) -> Result<()> {
+    if checkout_dir.exists() {
+        if checkout_dir.is_dir() {
+            log(verbosity, 1, || {
+                format!(
+                    "using existing Mojo git checkout at {}",
+                    checkout_dir.display()
+                )
+            });
+            return Ok(());
+        }
+        return Err(anyhow!(
+            "cannot clone Mojo git dependency into {}; path exists and is not a directory",
+            checkout_dir.display()
+        ));
+    }
+
+    let parent = checkout_dir
+        .parent()
+        .ok_or_else(|| anyhow!("cannot determine parent for {}", checkout_dir.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+
+    let git = mohaus_core::toolchain::find_program_in_path("git").ok_or_else(|| {
+        anyhow!("`git` is not on PATH; install git to add Mojo dependencies from git")
+    })?;
+    log(verbosity, 1, || {
+        format!(
+            "cloning Mojo git dependency {url} into {}",
+            checkout_dir.display()
+        )
+    });
+    let args = vec![
+        OsString::from("clone"),
+        OsString::from("--depth"),
+        OsString::from("1"),
+        OsString::from(url),
+        checkout_dir.as_os_str().to_os_string(),
+    ];
+    let result = run_status(git, args, verbosity);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(checkout_dir);
+    }
+    result.with_context(|| {
+        format!(
+            "failed to clone Mojo git dependency {url} into {}",
+            checkout_dir.display()
+        )
+    })
 }
 
 fn watch(interval_ms: u64, verbosity: Verbosity) -> Result<()> {
@@ -891,6 +946,35 @@ mod tests {
         crate::add_mojo_dependency(project, "vendor/some_pkg", false, Verbosity::default())?;
         let updated = fs::read_to_string(project.join("pyproject.toml"))?;
         assert!(updated.contains("\"vendor/some_pkg\","));
+        Ok(())
+    }
+
+    #[test]
+    fn add_mojo_git_dependency_uses_existing_vendor_checkout() -> anyhow::Result<()> {
+        let root = TempDir::new()?;
+        let project = root.path();
+        fs::create_dir_all(project.join("vendor/NuMojo"))?;
+        fs::write(
+            project.join("pyproject.toml"),
+            "[build-system]\n\
+             requires = [\"mohaus>=0.1,<0.2\"]\n\
+             build-backend = \"mohaus.backend\"\n\n\
+             [project]\n\
+             name = \"demo\"\n\
+             version = \"0.1.0\"\n\n\
+             [tool.mohaus]\n\
+             mojo-include-paths = []\n",
+        )?;
+
+        crate::add_mojo_dependency(
+            project,
+            "github:Mojo-Numerics-and-Algorithms-group/NuMojo",
+            false,
+            Verbosity::default(),
+        )?;
+
+        let updated = fs::read_to_string(project.join("pyproject.toml"))?;
+        assert!(updated.contains("\"vendor/NuMojo\","));
         Ok(())
     }
 

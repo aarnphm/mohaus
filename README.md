@@ -33,6 +33,9 @@ diagnostics and forward matching verbosity into uv/pip-backed installs.
 Use `mohaus develop -- <uv pip install args>` to pass installer controls
 through to the editable install, for example `--python .venv/bin/python`,
 `--refresh-package mohaus`, or `--reinstall-package <name>`.
+Use `mohaus add --mojo <path>` for local Mojo include roots, or
+`mohaus add --mojo github:owner/repo` to clone a git dependency into
+`vendor/<repo>` and append that checkout to `mojo-include-paths`.
 
 ```bash
 mohaus init monpy ~/workspace/monpy

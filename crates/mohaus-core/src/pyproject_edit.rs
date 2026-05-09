@@ -3,6 +3,8 @@
 //! Two operations:
 //!   - `add_build_system_requirement` appends to `[build-system] requires`.
 //!   - `add_mojo_include_path` appends to `[tool.mohaus] mojo-include-paths`.
+//!   - `resolve_mojo_dependency` maps `mohaus add --mojo` specs to local
+//!     include paths, cloning metadata for git-backed specs when needed.
 //!
 //! Edits are deterministic: the array becomes a multi-line block sorted by
 //! insertion order, with stable indentation. We avoid round-tripping through
@@ -12,6 +14,33 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{MohausError, Result};
+
+const GITHUB_PREFIX: &str = "github:";
+const VENDORED_MOJO_DIR: &str = "vendor";
+
+/// Resolved action for a `mohaus add --mojo` spec.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResolvedMojoDependency {
+    /// The spec already points at an existing local include root.
+    Local { include_path: String },
+    /// The spec is a git remote that should be cloned before appending the
+    /// checkout path as a local include root.
+    Git {
+        url: String,
+        checkout_dir: PathBuf,
+        include_path: String,
+    },
+}
+
+impl ResolvedMojoDependency {
+    /// Local include path to append to `[tool.mohaus].mojo-include-paths`.
+    #[must_use]
+    pub fn include_path(&self) -> &str {
+        match self {
+            Self::Local { include_path } | Self::Git { include_path, .. } => include_path,
+        }
+    }
+}
 
 /// Append a PEP 508 requirement to `[build-system].requires`.
 ///
@@ -52,22 +81,67 @@ pub fn add_mojo_include_path(pyproject: &Path, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a Mojo dependency spec. Local paths are normalized relative to the
-/// project root. Remote specs (anything with a scheme prefix) are returned
-/// unchanged so callers can still pin them via `--build-system`.
+/// Resolve a Mojo dependency spec.
+///
+/// Local paths are normalized relative to the project root. Git specs are
+/// converted into `vendor/<repo>` checkout metadata and that checkout path is
+/// returned as the include path. Existing local paths win over bare
+/// `owner/repo` GitHub shorthand so local vendor paths keep working.
 ///
 /// # Errors
 ///
-/// Returns an error when a local path doesn't exist or doesn't contain a
-/// `.mojopkg` and isn't a `.mojopkg` itself.
-pub fn resolve_mojo_include(project_dir: &Path, spec: &str) -> Result<String> {
-    if spec.contains("://") {
-        return Err(MohausError::InvalidProject {
-            message: format!(
-                "remote Mojo specs are not supported by `mohaus add --mojo` yet: {spec}"
-            ),
-        });
+/// Returns an error when a local path doesn't exist and the spec is not a
+/// supported git form.
+pub fn resolve_mojo_dependency(project_dir: &Path, spec: &str) -> Result<ResolvedMojoDependency> {
+    if let Some(remote) = parse_explicit_git_spec(spec)? {
+        return Ok(resolve_git_dependency(project_dir, &remote));
     }
+
+    if let Some(include_path) = resolve_existing_local_include(project_dir, spec) {
+        return Ok(ResolvedMojoDependency::Local { include_path });
+    }
+
+    if let Some(remote) = parse_github_slug(spec) {
+        return Ok(resolve_git_dependency(project_dir, &remote));
+    }
+
+    let candidate = PathBuf::from(spec);
+    let absolute = if candidate.is_absolute() {
+        candidate.clone()
+    } else {
+        project_dir.join(&candidate)
+    };
+    Err(MohausError::InvalidProject {
+        message: format!(
+            "mojo dependency `{spec}` does not exist (looked for {})",
+            absolute.display()
+        ),
+    })
+}
+
+/// Resolve a local Mojo dependency spec.
+///
+/// # Errors
+///
+/// Returns an error when the local path doesn't exist.
+pub fn resolve_mojo_include(project_dir: &Path, spec: &str) -> Result<String> {
+    resolve_existing_local_include(project_dir, spec).ok_or_else(|| {
+        let candidate = PathBuf::from(spec);
+        let absolute = if candidate.is_absolute() {
+            candidate
+        } else {
+            project_dir.join(candidate)
+        };
+        MohausError::InvalidProject {
+            message: format!(
+                "mojo dependency `{spec}` does not exist (looked for {})",
+                absolute.display()
+            ),
+        }
+    })
+}
+
+fn resolve_existing_local_include(project_dir: &Path, spec: &str) -> Option<String> {
     let candidate = PathBuf::from(spec);
     let absolute = if candidate.is_absolute() {
         candidate.clone()
@@ -75,15 +149,95 @@ pub fn resolve_mojo_include(project_dir: &Path, spec: &str) -> Result<String> {
         project_dir.join(&candidate)
     };
     if !absolute.exists() {
-        return Err(MohausError::InvalidProject {
-            message: format!(
-                "mojo dependency `{spec}` does not exist (looked for {})",
-                absolute.display()
-            ),
-        });
+        return None;
     }
     let relative = pathdiff_relative(&absolute, project_dir).unwrap_or(absolute.clone());
-    Ok(unix_path_string(&relative))
+    Some(unix_path_string(&relative))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GitMojoRemote {
+    url: String,
+    repo_name: String,
+}
+
+fn resolve_git_dependency(project_dir: &Path, remote: &GitMojoRemote) -> ResolvedMojoDependency {
+    let checkout_relative = PathBuf::from(VENDORED_MOJO_DIR).join(&remote.repo_name);
+    ResolvedMojoDependency::Git {
+        url: remote.url.clone(),
+        checkout_dir: project_dir.join(&checkout_relative),
+        include_path: unix_path_string(&checkout_relative),
+    }
+}
+
+fn parse_explicit_git_spec(spec: &str) -> Result<Option<GitMojoRemote>> {
+    if let Some(value) = spec.strip_prefix(GITHUB_PREFIX) {
+        let remote = parse_github_slug(value).ok_or_else(|| MohausError::InvalidProject {
+            message: format!("invalid GitHub Mojo dependency `{spec}`; expected github:owner/repo"),
+        })?;
+        return Ok(Some(remote));
+    }
+
+    if is_url_git_spec(spec) || is_scp_git_spec(spec) {
+        let repo_name =
+            repo_name_from_git_url(spec).ok_or_else(|| MohausError::InvalidProject {
+                message: format!(
+                    "could not infer repository name from Mojo git dependency `{spec}`"
+                ),
+            })?;
+        return Ok(Some(GitMojoRemote {
+            url: spec.to_string(),
+            repo_name,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn parse_github_slug(value: &str) -> Option<GitMojoRemote> {
+    let (owner, repo) = value.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    if !is_github_component(owner) || !is_github_component(repo) {
+        return None;
+    }
+    let repo_name = strip_git_suffix(repo)?;
+    Some(GitMojoRemote {
+        url: format!("https://github.com/{owner}/{repo_name}.git"),
+        repo_name: repo_name.to_string(),
+    })
+}
+
+fn is_github_component(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn is_url_git_spec(spec: &str) -> bool {
+    ["https://", "ssh://", "git://", "file://"]
+        .iter()
+        .any(|prefix| spec.starts_with(prefix))
+}
+
+fn is_scp_git_spec(spec: &str) -> bool {
+    spec.contains('@') && spec.contains(':') && !spec.contains("://")
+}
+
+fn repo_name_from_git_url(value: &str) -> Option<String> {
+    let without_trailing_slash = value.trim_end_matches('/');
+    let path = if is_scp_git_spec(without_trailing_slash) {
+        without_trailing_slash.rsplit_once(':')?.1
+    } else {
+        without_trailing_slash.rsplit('/').next()?
+    };
+    strip_git_suffix(path).map(str::to_string)
+}
+
+fn strip_git_suffix(value: &str) -> Option<&str> {
+    let repo_name = value.strip_suffix(".git").unwrap_or(value);
+    (!repo_name.is_empty()).then_some(repo_name)
 }
 
 fn pathdiff_relative(target: &Path, base: &Path) -> Option<PathBuf> {
@@ -346,6 +500,63 @@ mojo-include-paths = []
         )
         .unwrap();
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn resolves_existing_local_include_before_bare_github_shorthand() {
+        let project = tempfile::tempdir().unwrap();
+        let local = project
+            .path()
+            .join("Mojo-Numerics-and-Algorithms-group")
+            .join("NuMojo");
+        fs::create_dir_all(&local).unwrap();
+
+        let resolved =
+            resolve_mojo_dependency(project.path(), "Mojo-Numerics-and-Algorithms-group/NuMojo")
+                .unwrap();
+
+        assert_eq!(
+            resolved,
+            ResolvedMojoDependency::Local {
+                include_path: "Mojo-Numerics-and-Algorithms-group/NuMojo".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_github_prefix_to_vendor_checkout() {
+        let project = tempfile::tempdir().unwrap();
+        let resolved = resolve_mojo_dependency(
+            project.path(),
+            "github:Mojo-Numerics-and-Algorithms-group/NuMojo",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved,
+            ResolvedMojoDependency::Git {
+                url: "https://github.com/Mojo-Numerics-and-Algorithms-group/NuMojo.git".to_string(),
+                checkout_dir: project.path().join("vendor").join("NuMojo"),
+                include_path: "vendor/NuMojo".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_missing_owner_repo_as_github_checkout() {
+        let project = tempfile::tempdir().unwrap();
+        let resolved =
+            resolve_mojo_dependency(project.path(), "Mojo-Numerics-and-Algorithms-group/NuMojo")
+                .unwrap();
+
+        assert_eq!(
+            resolved,
+            ResolvedMojoDependency::Git {
+                url: "https://github.com/Mojo-Numerics-and-Algorithms-group/NuMojo.git".to_string(),
+                checkout_dir: project.path().join("vendor").join("NuMojo"),
+                include_path: "vendor/NuMojo".to_string(),
+            }
+        );
     }
 
     #[test]
