@@ -24,6 +24,7 @@ use notify_debouncer_mini::new_debouncer;
 
 const SELF_FIND_LINKS_ENV: &str = "MOHAUS_SELF_FIND_LINKS";
 const SELF_WHEEL_ENV: &str = "MOHAUS_SELF_WHEEL";
+const EDITABLE_REBUILDING_ENV: &str = "MOHAUS_EDITABLE_REBUILDING";
 const VENDORED_MOJO_INCLUDE_MARKER_BODY: &str = "mohaus mojo include root\n";
 
 #[derive(Debug)]
@@ -616,7 +617,7 @@ fn run_editable_install(
             mojo_requirement.clone(),
             &passthrough,
         );
-        return run_status(uv, args, verbosity);
+        return run_status_with_env(uv, args, verbosity, editable_install_child_env());
     }
 
     let python = mohaus_core::toolchain::find_program_in_path("python")
@@ -630,7 +631,7 @@ fn run_editable_install(
         mojo_requirement,
         &passthrough,
     );
-    run_status(python, args, verbosity)
+    run_status_with_env(python, args, verbosity, editable_install_child_env())
 }
 
 fn uv_pip_install_args(
@@ -776,8 +777,20 @@ fn monotonicish_nanos() -> u128 {
 }
 
 fn run_status(program: PathBuf, args: Vec<OsString>, verbosity: Verbosity) -> Result<()> {
+    run_status_with_env(program, args, verbosity, &[])
+}
+
+fn run_status_with_env(
+    program: PathBuf,
+    args: Vec<OsString>,
+    verbosity: Verbosity,
+    envs: &[(&str, &str)],
+) -> Result<()> {
     let mut command = Command::new(&program);
     command.args(&args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
     if verbosity.is_enabled() {
         command.env(VERBOSITY_ENV, verbosity.env_value());
     }
@@ -799,6 +812,10 @@ fn run_status(program: PathBuf, args: Vec<OsString>, verbosity: Verbosity) -> Re
         return Ok(());
     }
     Err(anyhow!("{} exited with {status}", program.display()))
+}
+
+fn editable_install_child_env() -> &'static [(&'static str, &'static str)] {
+    &[(EDITABLE_REBUILDING_ENV, "1")]
 }
 
 fn os_string_error(error: OsString) -> anyhow::Error {
@@ -1108,6 +1125,14 @@ mod tests {
                 "--no-build-isolation"
             ]
             .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn editable_install_child_env_marks_rebuilding() {
+        assert_eq!(
+            crate::editable_install_child_env(),
+            &[(crate::EDITABLE_REBUILDING_ENV, "1")]
         );
     }
 

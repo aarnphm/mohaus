@@ -33,14 +33,11 @@ impl PythonInfo {
             });
         }
         let platform_tag = platform.replace(['-', '.'], "_");
-        let abi = if cache_tag.starts_with("cpython-") {
-            cache_tag.clone()
-        } else {
-            "none".to_string()
-        };
+        let python_tag = python_wheel_tag(&cache_tag, major, minor);
+        let abi_tag = abi_wheel_tag(&ext_suffix, &cache_tag, &python_tag);
         Ok(Self {
             ext_suffix,
-            wheel_tag: format!("{cache_tag}-{abi}-{platform_tag}"),
+            wheel_tag: format!("{python_tag}-{abi_tag}-{platform_tag}"),
             pure_tag: "py3-none-any".to_string(),
         })
     }
@@ -110,4 +107,56 @@ fn parse_u8(value: &str, label: &str) -> Result<u8> {
         .map_err(|source| MohausError::InvalidProject {
             message: format!("could not parse {label} `{value}`: {source}"),
         })
+}
+
+fn python_wheel_tag(cache_tag: &str, major: u8, minor: u8) -> String {
+    if cache_tag.starts_with("cpython-") {
+        return format!("cp{major}{minor}");
+    }
+    cache_tag.replace(['-', '.'], "_")
+}
+
+fn abi_wheel_tag(ext_suffix: &str, cache_tag: &str, python_tag: &str) -> String {
+    if ext_suffix.contains(".abi3") {
+        return "abi3".to_string();
+    }
+    if cache_tag.starts_with("cpython-") {
+        return python_tag.to_string();
+    }
+    "none".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+
+    use super::PythonInfo;
+
+    #[test]
+    fn cpython_cache_tag_becomes_pep425_wheel_tag() -> Result<()> {
+        let info = PythonInfo::from_parts(
+            ".cpython-311-darwin.so".to_string(),
+            "cpython-311".to_string(),
+            "macosx-14.0-arm64".to_string(),
+            3,
+            11,
+        )?;
+
+        assert_eq!(info.wheel_tag, "cp311-cp311-macosx_14_0_arm64");
+        Ok(())
+    }
+
+    #[test]
+    fn abi3_extension_suffix_becomes_abi3_wheel_tag() -> Result<()> {
+        let info = PythonInfo::from_parts(
+            ".abi3.so".to_string(),
+            "cpython-311".to_string(),
+            "macosx-14.0-arm64".to_string(),
+            3,
+            11,
+        )?;
+
+        assert_eq!(info.wheel_tag, "cp311-abi3-macosx_14_0_arm64");
+        Ok(())
+    }
 }
