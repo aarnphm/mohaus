@@ -30,7 +30,9 @@ TEMPLATE_FILES = (
   "lib.mojo.tmpl",
   "__init__.py.tmpl",
   "README.md.tmpl",
+  "flake.nix.tmpl",
   "gitignore.tmpl",
+  "gitattributes.tmpl",
   "LICENSE.tmpl",
 )
 

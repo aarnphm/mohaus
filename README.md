@@ -10,6 +10,7 @@ and Python package code under `python/`:
 my_project/
 ├── src/lib.mojo
 ├── python/my_project/
+├── flake.nix
 ├── pyproject.toml
 ├── .mojo-version
 ├── .gitignore
@@ -18,6 +19,9 @@ my_project/
 
 Generated projects currently pin nightly `mojo==1.0.0b2.dev2026050805` and add
 the Modular nightly uv index so isolated `uv build` can resolve the compiler.
+They also include a Nix flake with the `mohaus` CLI, Python 3.11, uv,
+formatter/check apps, flake-owned pre-commit hooks, and a `nix develop` shell
+that keeps the editable install warm.
 When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
 wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
 first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,

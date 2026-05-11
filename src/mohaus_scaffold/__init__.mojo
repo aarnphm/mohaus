@@ -91,6 +91,11 @@ def scaffold_project(options: ScaffoldOptions) raises:
         _render(_read_template(options.templates_dir, "pyproject.toml.tmpl"), replacements),
     )
     _write_file(
+        dest_str,
+        "flake.nix",
+        _render(_read_template(options.templates_dir, "flake.nix.tmpl"), replacements),
+    )
+    _write_file(
         src_root,
         "lib.mojo",
         _render(_read_template(options.templates_dir, "lib.mojo.tmpl"), replacements),

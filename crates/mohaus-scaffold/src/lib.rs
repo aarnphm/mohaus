@@ -9,6 +9,7 @@ use mohaus_core::error::{MohausError, Result};
 use mohaus_core::wheel::write_file;
 
 const PYPROJECT_TEMPLATE: &str = include_str!("templates/pyproject.toml.tmpl");
+const FLAKE_NIX_TEMPLATE: &str = include_str!("templates/flake.nix.tmpl");
 const LIB_MOJO_TEMPLATE: &str = include_str!("templates/lib.mojo.tmpl");
 const PY_INIT_TEMPLATE: &str = include_str!("templates/__init__.py.tmpl");
 const README_TEMPLATE: &str = include_str!("templates/README.md.tmpl");
@@ -43,6 +44,11 @@ pub fn scaffold_project(options: &ScaffoldOptions) -> Result<()> {
     write_template(
         &options.destination.join("pyproject.toml"),
         PYPROJECT_TEMPLATE,
+        &replacements,
+    )?;
+    write_template(
+        &options.destination.join("flake.nix"),
+        FLAKE_NIX_TEMPLATE,
         &replacements,
     )?;
     write_template(
@@ -173,6 +179,18 @@ mod tests {
         assert!(pyproject.contains(&format!("\"mojo=={DEFAULT_MOJO_VERSION}\"")));
         assert!(!pyproject.contains("mojo-src = \"src\""));
         assert!(!pyproject.contains("python-src = \"python\""));
+        assert!(pyproject.contains("extend-include = [\"*.ipynb\"]"));
+        assert!(pyproject.contains("[tool.ty.rules]\nall = \"error\""));
+        let flake = fs::read_to_string(destination.join("flake.nix")).unwrap();
+        assert!(flake.contains(
+            "description = \"acme: mixed Python and Mojo package scaffolded by mohaus\";"
+        ));
+        assert!(flake.contains("git-hooks-nix.url = \"github:cachix/git-hooks.nix\";"));
+        assert!(flake.contains("mohaus.url = \"github:aarnphm/mohaus\";"));
+        assert!(flake.contains("mohaus develop"));
+        assert!(flake.contains("pre-commit = git-hooks-nix.lib.${system}.run"));
+        assert!(flake.contains("uvx ty check"));
+        assert!(!flake.contains("oxfmt"));
         let gitignore = fs::read_to_string(destination.join(".gitignore")).unwrap();
         assert!(!gitignore.contains("/benches/\n"));
         assert!(gitignore.contains("/vendor/\n"));

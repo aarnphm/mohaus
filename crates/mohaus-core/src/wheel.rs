@@ -486,6 +486,8 @@ const STAGING_SKIPPED_TOPLEVEL: &[&str] = &[
     "LICENCE",
     ".mojo-version",
     ".gitignore",
+    ".gitattributes",
+    "flake.nix",
 ];
 
 fn should_skip_staging_path(path: &Path, relative: &Path) -> bool {
@@ -785,6 +787,14 @@ mod tests {
         let source_root = TempDir::new().unwrap();
         let dest_root = TempDir::new().unwrap();
 
+        fs::write(source_root.path().join("pyproject.toml"), b"").unwrap();
+        fs::write(source_root.path().join("README.md"), b"").unwrap();
+        fs::write(source_root.path().join("LICENSE"), b"").unwrap();
+        fs::write(source_root.path().join(".mojo-version"), b"").unwrap();
+        fs::write(source_root.path().join(".gitignore"), b"").unwrap();
+        fs::write(source_root.path().join(".gitattributes"), b"").unwrap();
+        fs::write(source_root.path().join("flake.nix"), b"").unwrap();
+
         let pkg = source_root.path().join("demo");
         fs::create_dir_all(pkg.join("__pycache__")).unwrap();
         fs::create_dir_all(pkg.join(".pytest_cache")).unwrap();
@@ -796,11 +806,18 @@ mod tests {
         fs::write(pkg.join("__pycache__/cached.pyc"), b"").unwrap();
         fs::write(pkg.join(".pytest_cache/v"), b"").unwrap();
 
-        super::copy_dir(source_root.path(), dest_root.path()).unwrap();
+        crate::wheel::copy_dir(source_root.path(), dest_root.path()).unwrap();
 
         let staged_pkg = dest_root.path().join("demo");
         assert!(staged_pkg.join("__init__.py").is_file());
         assert!(staged_pkg.join("py.typed").is_file());
+        assert!(!dest_root.path().join("pyproject.toml").exists());
+        assert!(!dest_root.path().join("README.md").exists());
+        assert!(!dest_root.path().join("LICENSE").exists());
+        assert!(!dest_root.path().join(".mojo-version").exists());
+        assert!(!dest_root.path().join(".gitignore").exists());
+        assert!(!dest_root.path().join(".gitattributes").exists());
+        assert!(!dest_root.path().join("flake.nix").exists());
         assert!(!staged_pkg.join("__pycache__").exists());
         assert!(!staged_pkg.join(".pytest_cache").exists());
         assert!(!staged_pkg.join("__init__.cpython-311.pyc").exists());
