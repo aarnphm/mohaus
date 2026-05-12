@@ -8,7 +8,7 @@ use crate::error::{MohausError, Result};
 use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
 use crate::sdist::write_sdist_archive;
-use crate::toolchain::resolve_verified_mojo_with_verbosity;
+use crate::toolchain::resolve_project_mojo_with_verbosity;
 use crate::wheel::{
     copy_dir, copy_prepared_dist_info, write_dist_info, write_file, write_wheel_archive,
 };
@@ -131,13 +131,7 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
 }
 
 fn resolve_module_toolchain(config: &ProjectConfig, verbosity: Verbosity) -> Result<PathBuf> {
-    let pinned = config
-        .mojo_version
-        .as_ref()
-        .ok_or_else(|| MohausError::InvalidProject {
-            message: ".mojo-version is required to compile Mojo modules".to_string(),
-        })?;
-    Ok(resolve_verified_mojo_with_verbosity(pinned, verbosity)?.executable)
+    Ok(resolve_project_mojo_with_verbosity(config.mojo_version.as_ref(), verbosity)?.executable)
 }
 
 /// Build a PEP 660 editable wheel.

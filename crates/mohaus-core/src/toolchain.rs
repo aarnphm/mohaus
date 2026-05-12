@@ -53,6 +53,39 @@ pub fn resolve_verified_mojo_with_verbosity(
     resolve_verified_mojo_from_candidates_with_verbosity(expected, candidates, verbosity)
 }
 
+/// Resolve the Mojo toolchain, checking the version only when a project pin is
+/// configured.
+///
+/// # Errors
+///
+/// Returns an error when Mojo cannot be found, `mojo --version` fails, or the
+/// discovered version does not match the configured project pin.
+pub fn resolve_project_mojo_with_verbosity(
+    expected: Option<&MojoVersion>,
+    verbosity: Verbosity,
+) -> Result<MojoToolchain> {
+    match expected {
+        Some(expected) => resolve_verified_mojo_with_verbosity(expected, verbosity),
+        None => resolve_unpinned_mojo_with_verbosity(verbosity),
+    }
+}
+
+fn resolve_unpinned_mojo_with_verbosity(verbosity: Verbosity) -> Result<MojoToolchain> {
+    let executable = resolve_mojo_executable_with_verbosity(verbosity)?;
+    let version_output = probe_mojo_version_with_verbosity(&executable, verbosity)?;
+    debug(verbosity, 1, || {
+        format!(
+            "using unpinned Mojo {} at {}",
+            normalize_mojo_version_token(&version_output),
+            executable.display()
+        )
+    });
+    Ok(MojoToolchain {
+        executable,
+        version_output,
+    })
+}
+
 /// Resolve the Mojo executable without checking the version.
 ///
 /// # Errors

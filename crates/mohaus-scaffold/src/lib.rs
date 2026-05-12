@@ -3,8 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mohaus_core::DEFAULT_MOJO_VERSION;
-use mohaus_core::config::PackageName;
+use mohaus_core::config::{MojoVersion, PackageName};
 use mohaus_core::error::{MohausError, Result};
 use mohaus_core::wheel::write_file;
 
@@ -22,6 +21,7 @@ const LICENSE_TEMPLATE: &str = include_str!("templates/LICENSE.tmpl");
 pub struct ScaffoldOptions {
     pub name: String,
     pub destination: PathBuf,
+    pub mojo_version: Option<MojoVersion>,
 }
 
 /// Scaffold a new mohaus project.
@@ -38,7 +38,6 @@ pub fn scaffold_project(options: &ScaffoldOptions) -> Result<()> {
     let replacements = [
         ("{{project_name}}", package.as_str().to_string()),
         ("{{import_name}}", import_name.clone()),
-        ("{{mojo_version}}", DEFAULT_MOJO_VERSION.to_string()),
     ];
 
     write_template(
@@ -93,10 +92,12 @@ pub fn scaffold_project(options: &ScaffoldOptions) -> Result<()> {
         LICENSE_TEMPLATE,
         &replacements,
     )?;
-    write_file(
-        &options.destination.join(".mojo-version"),
-        DEFAULT_MOJO_VERSION.as_bytes(),
-    )?;
+    if let Some(mojo_version) = options.mojo_version.as_ref() {
+        write_file(
+            &options.destination.join(".mojo-version"),
+            mojo_version.as_str().as_bytes(),
+        )?;
+    }
     Ok(())
 }
 
@@ -148,22 +149,25 @@ fn write_template(path: &Path, template: &str, replacements: &[(&str, String)]) 
 mod tests {
     use std::fs;
 
-    use mohaus_core::DEFAULT_MOJO_VERSION;
-    use mohaus_core::config::ProjectConfig;
+    use mohaus_core::config::{MojoVersion, ProjectConfig};
     use mohaus_core::wheel::metadata_text;
     use tempfile::TempDir;
 
     use crate::{ScaffoldOptions, scaffold_project};
 
+    fn scaffold_options(name: &str, destination: std::path::PathBuf) -> ScaffoldOptions {
+        ScaffoldOptions {
+            name: name.to_string(),
+            destination,
+            mojo_version: None,
+        }
+    }
+
     #[test]
     fn scaffold_round_trips_into_project_config() {
         let root = TempDir::new().unwrap();
         let destination = root.path().join("acme");
-        scaffold_project(&ScaffoldOptions {
-            name: "acme".to_string(),
-            destination: destination.clone(),
-        })
-        .unwrap();
+        scaffold_project(&scaffold_options("acme", destination.clone())).unwrap();
 
         let config = ProjectConfig::load(&destination).unwrap();
         assert_eq!(config.package.as_str(), "acme");
@@ -171,12 +175,13 @@ mod tests {
         assert_eq!(config.modules[0].name.as_str(), "acme._native");
         assert!(config.generate_stub);
         assert!(destination.join("LICENSE").is_file());
-        assert_eq!(
-            fs::read_to_string(destination.join(".mojo-version")).unwrap(),
-            DEFAULT_MOJO_VERSION
-        );
+        assert!(!destination.join(".mojo-version").exists());
         let pyproject = fs::read_to_string(destination.join("pyproject.toml")).unwrap();
-        assert!(pyproject.contains(&format!("\"mojo=={DEFAULT_MOJO_VERSION}\"")));
+        assert!(pyproject.contains("\"modular\","));
+        assert!(!pyproject.contains("\"mojo=="));
+        assert!(!pyproject.contains("\"mojo-compiler=="));
+        assert!(!pyproject.contains("\"mojo-compiler-mojo-libs=="));
+        assert!(!pyproject.contains("\"mojo-lldb-libs=="));
         assert!(!pyproject.contains("mojo-src = \"src\""));
         assert!(!pyproject.contains("python-src = \"python\""));
         assert!(pyproject.contains("extend-include = [\"*.ipynb\"]"));
@@ -191,6 +196,8 @@ mod tests {
         assert!(flake.contains("pre-commit = git-hooks-nix.lib.${system}.run"));
         assert!(flake.contains("uvx ty check"));
         assert!(!flake.contains("oxfmt"));
+        let readme = fs::read_to_string(destination.join("README.md")).unwrap();
+        assert!(readme.contains("https://whl.modular.com/nightly/simple/"));
         let gitignore = fs::read_to_string(destination.join(".gitignore")).unwrap();
         assert!(!gitignore.contains("/benches/\n"));
         assert!(gitignore.contains("/vendor/\n"));
@@ -199,14 +206,27 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_writes_optional_mojo_version_pin() {
+        let root = TempDir::new().unwrap();
+        let destination = root.path().join("acme");
+        let mut options = scaffold_options("acme", destination.clone());
+        options.mojo_version = Some(MojoVersion::parse("1.0.0b2.dev2026050805").unwrap());
+        scaffold_project(&options).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join(".mojo-version")).unwrap(),
+            "1.0.0b2.dev2026050805"
+        );
+        let pyproject = fs::read_to_string(destination.join("pyproject.toml")).unwrap();
+        assert!(pyproject.contains("\"modular\","));
+        assert!(!pyproject.contains("1.0.0b2.dev2026050805"));
+    }
+
+    #[test]
     fn scaffold_metadata_is_publishable_shape() {
         let root = TempDir::new().unwrap();
         let destination = root.path().join("acme");
-        scaffold_project(&ScaffoldOptions {
-            name: "acme".to_string(),
-            destination: destination.clone(),
-        })
-        .unwrap();
+        scaffold_project(&scaffold_options("acme", destination.clone())).unwrap();
 
         let config = ProjectConfig::load(&destination).unwrap();
         let metadata = metadata_text(&config, false);

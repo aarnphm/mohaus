@@ -3,7 +3,7 @@
 # unit tests; this test only proves the Mojo path renders the templates and
 # round-trips into a parseable project.
 
-from mohaus_scaffold import DEFAULT_MOJO_VERSION, ScaffoldOptions, scaffold_project
+from mohaus_scaffold import ScaffoldOptions, scaffold_project
 from std.os import getenv
 from std.os.path import isfile
 from std.pathlib import Path
@@ -25,10 +25,13 @@ def test_scaffold_writes_expected_files() raises:
     assert_true(isfile(String(destination.joinpath("python").joinpath("acme").joinpath("__init__.py"))))
     assert_true(isfile(String(destination.joinpath("LICENSE"))))
     assert_true(isfile(String(destination.joinpath(".gitattributes"))))
-    assert_true(isfile(String(destination.joinpath(".mojo-version"))))
-    assert_equal(destination.joinpath(".mojo-version").read_text(), DEFAULT_MOJO_VERSION)
+    assert_true(not isfile(String(destination.joinpath(".mojo-version"))))
     var pyproject = destination.joinpath("pyproject.toml").read_text()
-    assert_true(len(pyproject.split("mojo==" + DEFAULT_MOJO_VERSION)) > 1)
+    assert_true(len(pyproject.split('"modular"')) > 1)
+    assert_true(len(pyproject.split('"mojo==')) == 1)
+    assert_true(len(pyproject.split('"mojo-compiler==')) == 1)
+    assert_true(len(pyproject.split('"mojo-compiler-mojo-libs==')) == 1)
+    assert_true(len(pyproject.split('"mojo-lldb-libs==')) == 1)
     assert_true(len(pyproject.split('extend-include = ["*.ipynb"]')) > 1)
     assert_true(len(pyproject.split('[tool.ty.rules]\nall = "error"')) > 1)
     var flake = destination.joinpath("flake.nix").read_text()
@@ -39,6 +42,8 @@ def test_scaffold_writes_expected_files() raises:
     assert_true(len(flake.split("pre-commit = git-hooks-nix.lib.${system}.run")) > 1)
     assert_true(len(flake.split("uvx ty check")) > 1)
     assert_true(len(flake.split("oxfmt")) == 1)
+    var readme = destination.joinpath("README.md").read_text()
+    assert_true(len(readme.split("https://whl.modular.com/nightly/simple/")) > 1)
     var gitignore = destination.joinpath(".gitignore").read_text()
     assert_true(len(gitignore.split("/vendor/")) > 1)
     assert_true(len(gitignore.split("/benches/")) == 1)

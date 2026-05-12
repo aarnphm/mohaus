@@ -15,8 +15,6 @@ from std.os import listdir, makedirs
 from std.os.path import isdir
 from std.pathlib import Path
 
-comptime DEFAULT_MOJO_VERSION = "1.0.0b2.dev2026050805"
-
 
 @fieldwise_init
 struct ScaffoldOptions(Movable):
@@ -79,7 +77,6 @@ def scaffold_project(options: ScaffoldOptions) raises:
     var replacements = List[Tuple[String, String]]()
     replacements.append(Tuple[String, String]("{{project_name}}", options.name))
     replacements.append(Tuple[String, String]("{{import_name}}", import_name))
-    replacements.append(Tuple[String, String]("{{mojo_version}}", DEFAULT_MOJO_VERSION))
 
     var dest_str = String(destination_path)
     var python_root = String(destination_path.joinpath("python").joinpath(import_name))
@@ -126,4 +123,3 @@ def scaffold_project(options: ScaffoldOptions) raises:
         "LICENSE",
         _render(_read_template(options.templates_dir, "LICENSE.tmpl"), replacements),
     )
-    _write_file(dest_str, ".mojo-version", DEFAULT_MOJO_VERSION)

@@ -12,7 +12,7 @@ use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
 use crate::stub::{ModuleStub, module_stub_plan_for_extension};
 use crate::toolchain::{
-    resolve_verified_mojo_with_verbosity, run_command_with_env_remove_with_verbosity,
+    resolve_project_mojo_with_verbosity, run_command_with_env_remove_with_verbosity,
 };
 use crate::wheel::write_file;
 
@@ -119,14 +119,10 @@ pub fn ensure_editable_built_with_verbosity(
         return Ok(());
     }
     let mojo = if plan.iter().any(|stale| stale.needs_compile) {
-        let pinned = config
-            .mojo_version
-            .as_ref()
-            .ok_or_else(|| MohausError::InvalidProject {
-                message: ".mojo-version is required for editable builds with Mojo modules"
-                    .to_string(),
-            })?;
-        Some(resolve_verified_mojo_with_verbosity(pinned, verbosity)?)
+        Some(resolve_project_mojo_with_verbosity(
+            config.mojo_version.as_ref(),
+            verbosity,
+        )?)
     } else {
         None
     };
@@ -523,6 +519,11 @@ pub fn source_hash(config: &ProjectConfig, module: &MojoModule) -> Result<String
     let mut hasher = Sha256::new();
     hasher.update(module.name.as_str().as_bytes());
     hasher.update(module.entry.to_string_lossy().as_bytes());
+    if let Some(version) = &config.mojo_version {
+        hasher.update(b"mojo-version\0");
+        hasher.update(version.normalized().as_bytes());
+        hasher.update(b"\0");
+    }
     for flag in &config.mojo_flags {
         hasher.update(flag.as_bytes());
         hasher.update(b"\0");
@@ -631,6 +632,50 @@ module-name = "demo._native"
         .unwrap();
         let after = source_hash(&config, &config.modules[0]).unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn plan_rebuilds_recompiles_when_mojo_version_changes() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::create_dir_all(temp.path().join("python/demo")).unwrap();
+        fs::write(temp.path().join(".mojo-version"), "0.26.2.0").unwrap();
+        fs::write(
+            temp.path().join("pyproject.toml"),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+generate-stub = false
+"#,
+        )
+        .unwrap();
+        fs::write(temp.path().join("src/lib.mojo"), "def main():\n  pass\n").unwrap();
+        let old_config = ProjectConfig::load(temp.path()).unwrap();
+        let python = PythonInfo::from_parts(
+            ".cpython-311-darwin.so".to_string(),
+            "cpython-311".to_string(),
+            "macosx-11.0-arm64".to_string(),
+            3,
+            11,
+        )
+        .unwrap();
+        let module = &old_config.modules[0];
+        let extension_path = super::extension_output_path(&old_config, module, &python.ext_suffix);
+        fs::write(&extension_path, "").unwrap();
+        let hash_path = super::editable_hash_path(&old_config, module);
+        fs::create_dir_all(hash_path.parent().unwrap()).unwrap();
+        fs::write(&hash_path, source_hash(&old_config, module).unwrap()).unwrap();
+
+        fs::write(temp.path().join(".mojo-version"), "1.0.0.dev0").unwrap();
+        let new_config = ProjectConfig::load(temp.path()).unwrap();
+        let plan = super::plan_rebuilds(&new_config, &python).unwrap();
+
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].needs_compile);
     }
 
     #[test]

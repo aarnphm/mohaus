@@ -15,8 +15,8 @@ use anyhow::{Context, Result, anyhow};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use mohaus_core::{
-    BuildOptions, ProjectConfig, PythonInfo, SdistOptions, VERBOSITY_ENV, Verbosity, build_sdist,
-    build_wheel, ensure_editable_built_with_verbosity,
+    BuildOptions, MojoVersion, ProjectConfig, PythonInfo, SdistOptions, VERBOSITY_ENV, Verbosity,
+    build_sdist, build_wheel, ensure_editable_built_with_verbosity,
 };
 use mohaus_scaffold::{ScaffoldOptions, scaffold_project};
 use notify::RecursiveMode;
@@ -84,12 +84,20 @@ enum CommandKind {
 
         /// Destination directory. If omitted with a name, defaults to ./<name>.
         path: Option<PathBuf>,
+
+        /// Optional Mojo toolchain version to write to .mojo-version.
+        #[arg(long)]
+        mojo_version: Option<String>,
     },
 
     /// Scaffold a project in a new directory.
     New {
         /// Project name and destination directory.
         name: String,
+
+        /// Optional Mojo toolchain version to write to .mojo-version.
+        #[arg(long)]
+        mojo_version: Option<String>,
     },
 
     /// Generate shell completions.
@@ -112,7 +120,7 @@ enum CommandKind {
 
     /// Build and install an editable package.
     Develop {
-        /// Force non-isolated install, useful for nightly/local Mojo.
+        /// Force non-isolated install, useful for local Mojo toolchain overrides.
         #[arg(long)]
         no_build_isolation: bool,
 
@@ -157,7 +165,7 @@ enum CommandKind {
         group: Option<String>,
 
         /// Pin as a build-system requirement (`requires` in `[build-system]`).
-        /// Useful for mojo nightly pins.
+        /// Useful for Modular suite or nightly wheel constraints.
         #[arg(long)]
         build_system: bool,
 
@@ -170,8 +178,12 @@ enum CommandKind {
 fn run(cli: Cli) -> Result<()> {
     let verbosity = Verbosity::new(cli.verbose);
     match cli.command {
-        CommandKind::Init { name, path } => init(name, path, verbosity),
-        CommandKind::New { name } => new_project(name, verbosity),
+        CommandKind::Init {
+            name,
+            path,
+            mojo_version,
+        } => init(name, path, mojo_version, verbosity),
+        CommandKind::New { name, mojo_version } => new_project(name, mojo_version, verbosity),
         CommandKind::Completions { shell } => completions(shell),
         CommandKind::Build { release, out } => build(release, out, verbosity),
         CommandKind::Develop {
@@ -199,7 +211,12 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn init(name: Option<String>, path: Option<PathBuf>, verbosity: Verbosity) -> Result<()> {
+fn init(
+    name: Option<String>,
+    path: Option<PathBuf>,
+    mojo_version: Option<String>,
+    verbosity: Verbosity,
+) -> Result<()> {
     let cwd = env::current_dir().context("could not read current directory")?;
     let (name, destination) = match (name, path) {
         (Some(name), Some(destination)) => (name, destination),
@@ -229,11 +246,16 @@ fn init(name: Option<String>, path: Option<PathBuf>, verbosity: Verbosity) -> Re
     log(verbosity, 1, || {
         format!("scaffolding project {name} into {}", destination.display())
     });
-    scaffold_project(&ScaffoldOptions { name, destination })?;
+    let mojo_version = scaffold_mojo_version(mojo_version, verbosity)?;
+    scaffold_project(&ScaffoldOptions {
+        name,
+        destination,
+        mojo_version,
+    })?;
     Ok(())
 }
 
-fn new_project(name: String, verbosity: Verbosity) -> Result<()> {
+fn new_project(name: String, mojo_version: Option<String>, verbosity: Verbosity) -> Result<()> {
     let cwd = env::current_dir().context("could not read current directory")?;
     log(verbosity, 1, || {
         format!(
@@ -241,11 +263,30 @@ fn new_project(name: String, verbosity: Verbosity) -> Result<()> {
             cwd.join(&name).display()
         )
     });
+    let mojo_version = scaffold_mojo_version(mojo_version, verbosity)?;
     scaffold_project(&ScaffoldOptions {
         destination: cwd.join(&name),
         name,
+        mojo_version,
     })?;
     Ok(())
+}
+
+fn scaffold_mojo_version(
+    requested: Option<String>,
+    verbosity: Verbosity,
+) -> Result<Option<MojoVersion>> {
+    if let Some(value) = requested {
+        let version = MojoVersion::parse(value)?;
+        log(verbosity, 1, || {
+            format!("pinning requested Mojo version {}", version.as_str())
+        });
+        return Ok(Some(version));
+    }
+    log(verbosity, 2, || {
+        "leaving Mojo toolchain unpinned".to_string()
+    });
+    Ok(None)
 }
 
 fn completions(shell: Shell) -> Result<()> {
@@ -286,12 +327,7 @@ fn develop(no_build_isolation: bool, passthrough: Vec<String>, verbosity: Verbos
     log(verbosity, 2, || {
         format!("build isolation disabled: {disable_isolation}")
     });
-    run_editable_install(
-        disable_isolation,
-        editable_mojo_requirement(&config),
-        passthrough,
-        verbosity,
-    )
+    run_editable_install(disable_isolation, passthrough, verbosity)
 }
 
 fn sdist(out: PathBuf, verbosity: Verbosity) -> Result<()> {
@@ -577,28 +613,12 @@ fn relevant_events(events: &[notify_debouncer_mini::DebouncedEvent]) -> bool {
     })
 }
 
-fn should_disable_isolation(config: &ProjectConfig) -> bool {
-    if env::var_os("MOHAUS_MOJO").is_some() {
-        return true;
-    }
-    let Some(version) = config.mojo_version.as_ref() else {
-        return false;
-    };
-    let value = version.as_str();
-    value.contains("dev") || value.contains("nightly")
-}
-
-fn editable_mojo_requirement(config: &ProjectConfig) -> Option<OsString> {
-    let version = config.mojo_version.as_ref()?.as_str();
-    if version.contains("dev") || version.contains("nightly") {
-        return None;
-    }
-    Some(OsString::from(format!("mojo=={version}")))
+fn should_disable_isolation(_config: &ProjectConfig) -> bool {
+    env::var_os("MOHAUS_MOJO").is_some()
 }
 
 fn run_editable_install(
     no_build_isolation: bool,
-    mojo_requirement: Option<OsString>,
     passthrough: Vec<String>,
     verbosity: Verbosity,
 ) -> Result<()> {
@@ -614,7 +634,6 @@ fn run_editable_install(
             no_build_isolation,
             self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
             self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
-            mojo_requirement.clone(),
             &passthrough,
         );
         return run_status_with_env(uv, args, verbosity, editable_install_child_env());
@@ -628,7 +647,6 @@ fn run_editable_install(
         no_build_isolation,
         self_wheelhouse.as_ref().map(SelfWheelhouse::arg),
         self_wheelhouse.as_ref().and_then(SelfWheelhouse::wheel_arg),
-        mojo_requirement,
         &passthrough,
     );
     run_status_with_env(python, args, verbosity, editable_install_child_env())
@@ -639,7 +657,6 @@ fn uv_pip_install_args(
     no_build_isolation: bool,
     self_find_links: Option<OsString>,
     self_wheel: Option<OsString>,
-    mojo_requirement: Option<OsString>,
     passthrough: &[String],
 ) -> Vec<OsString> {
     let mut args = verbosity.flag_args();
@@ -648,7 +665,6 @@ fn uv_pip_install_args(
         no_build_isolation,
         self_find_links,
         self_wheel,
-        mojo_requirement,
         passthrough,
     ));
     args
@@ -659,7 +675,6 @@ fn python_pip_install_args(
     no_build_isolation: bool,
     self_find_links: Option<OsString>,
     self_wheel: Option<OsString>,
-    mojo_requirement: Option<OsString>,
     passthrough: &[String],
 ) -> Vec<OsString> {
     let mut args = vec![OsString::from("-m"), OsString::from("pip")];
@@ -668,7 +683,6 @@ fn python_pip_install_args(
         no_build_isolation,
         self_find_links,
         self_wheel,
-        mojo_requirement,
         passthrough,
     ));
     args
@@ -678,15 +692,11 @@ fn editable_install_args(
     no_build_isolation: bool,
     self_find_links: Option<OsString>,
     self_wheel: Option<OsString>,
-    mojo_requirement: Option<OsString>,
     passthrough: &[String],
 ) -> Vec<OsString> {
     let mut args = vec![OsString::from("install")];
     if let Some(wheel) = self_wheel {
         args.push(wheel);
-    }
-    if let Some(requirement) = mojo_requirement {
-        args.push(requirement);
     }
     args.push(OsString::from("-e"));
     args.push(OsString::from("."));
@@ -867,6 +877,8 @@ fn format_arg(arg: &std::ffi::OsStr) -> String {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use clap::{CommandFactory, Parser};
     use clap_complete::{Shell, generate};
@@ -886,6 +898,7 @@ mod tests {
         crate::init(
             Some("monpy".to_string()),
             Some(destination.clone()),
+            Some("1.0.0b1".to_string()),
             Verbosity::default(),
         )?;
 
@@ -899,6 +912,56 @@ mod tests {
         );
         let pyproject = fs::read_to_string(destination.join("pyproject.toml"))?;
         assert!(pyproject.contains("name = \"monpy\""));
+        assert!(pyproject.contains("\"modular\","));
+        assert!(!pyproject.contains("\"mojo=="));
+        assert!(!pyproject.contains("\"mojo-compiler=="));
+        assert_eq!(
+            fs::read_to_string(destination.join(".mojo-version"))?,
+            "1.0.0b1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn init_parses_mojo_version_option() -> anyhow::Result<()> {
+        let cli = crate::Cli::try_parse_from([
+            "mohaus",
+            "init",
+            "monpy",
+            "/tmp/monpy",
+            "--mojo-version",
+            "1.0.0b1",
+        ])?;
+        match cli.command {
+            crate::CommandKind::Init {
+                name,
+                path,
+                mojo_version,
+            } => {
+                assert_eq!(name, Some("monpy".to_string()));
+                assert_eq!(path, Some(std::path::PathBuf::from("/tmp/monpy")));
+                assert_eq!(mojo_version, Some("1.0.0b1".to_string()));
+            }
+            other => panic!("expected Init, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn init_without_mojo_version_leaves_project_unpinned() -> anyhow::Result<()> {
+        let root = TempDir::new()?;
+        let destination = root.path().join("workspace").join("monpy");
+
+        crate::init(
+            Some("monpy".to_string()),
+            Some(destination.clone()),
+            None,
+            Verbosity::default(),
+        )?;
+
+        let pyproject = fs::read_to_string(destination.join("pyproject.toml"))?;
+        assert!(pyproject.contains("\"modular\","));
+        assert!(!destination.join(".mojo-version").exists());
         Ok(())
     }
 
@@ -1081,7 +1144,6 @@ mod tests {
             false,
             Some(OsString::from("/tmp/mohaus-wheelhouse")),
             None,
-            None,
             &[],
         );
 
@@ -1100,7 +1162,7 @@ mod tests {
 
     #[test]
     fn uv_pip_install_args_forward_repeated_verbose_flags_before_pip() {
-        let args = crate::uv_pip_install_args(Verbosity::new(3), false, None, None, None, &[]);
+        let args = crate::uv_pip_install_args(Verbosity::new(3), false, None, None, &[]);
 
         assert_eq!(
             args,
@@ -1110,7 +1172,7 @@ mod tests {
 
     #[test]
     fn python_pip_install_args_forward_repeated_verbose_flags_before_install() {
-        let args = crate::python_pip_install_args(Verbosity::new(2), true, None, None, None, &[]);
+        let args = crate::python_pip_install_args(Verbosity::new(2), true, None, None, &[]);
 
         assert_eq!(
             args,
@@ -1129,6 +1191,33 @@ mod tests {
     }
 
     #[test]
+    fn uv_pip_install_args_can_target_nightly_modular_wheels() {
+        let passthrough = vec![
+            "--prerelease".to_string(),
+            "allow".to_string(),
+            "--extra-index-url".to_string(),
+            "https://whl.modular.com/nightly/simple/".to_string(),
+        ];
+        let args =
+            crate::uv_pip_install_args(Verbosity::default(), false, None, None, &passthrough);
+
+        assert_eq!(
+            args,
+            [
+                "pip",
+                "install",
+                "-e",
+                ".",
+                "--prerelease",
+                "allow",
+                "--extra-index-url",
+                "https://whl.modular.com/nightly/simple/",
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
     fn editable_install_child_env_marks_rebuilding() {
         assert_eq!(
             crate::editable_install_child_env(),
@@ -1136,9 +1225,39 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_status_with_env_marks_actual_child_process() -> anyhow::Result<()> {
+        let root = TempDir::new()?;
+        let script = root.path().join("assert-env.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+if [ "${MOHAUS_EDITABLE_REBUILDING:-}" != "1" ]; then
+  exit 42
+fi
+if [ "${MOHAUS_VERBOSITY:-}" != "2" ]; then
+  exit 43
+fi
+"#,
+        )?;
+        let mut permissions = fs::metadata(&script)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions)?;
+
+        crate::run_status_with_env(
+            script,
+            Vec::<OsString>::new(),
+            Verbosity::new(2),
+            crate::editable_install_child_env(),
+        )?;
+
+        Ok(())
+    }
+
     #[test]
     fn editable_install_args_keep_no_build_isolation_escape_hatch() {
-        let args = crate::editable_install_args(true, None, None, None, &[]);
+        let args = crate::editable_install_args(true, None, None, &[]);
 
         assert_eq!(
             args,
@@ -1152,7 +1271,6 @@ mod tests {
             false,
             Some(OsString::from("/tmp/mohaus-wheelhouse")),
             Some(OsString::from("/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl")),
-            None,
             &[],
         );
 
@@ -1161,31 +1279,6 @@ mod tests {
             [
                 "install",
                 "/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl",
-                "-e",
-                ".",
-                "--find-links",
-                "/tmp/mohaus-wheelhouse",
-            ]
-            .map(OsString::from)
-        );
-    }
-
-    #[test]
-    fn editable_install_args_install_stable_mojo_as_root_requirement() {
-        let args = crate::editable_install_args(
-            false,
-            Some(OsString::from("/tmp/mohaus-wheelhouse")),
-            Some(OsString::from("/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl")),
-            Some(OsString::from("mojo==0.26.2.0")),
-            &[],
-        );
-
-        assert_eq!(
-            args,
-            [
-                "install",
-                "/tmp/mohaus-wheelhouse/mohaus-0.1.0.whl",
-                "mojo==0.26.2.0",
                 "-e",
                 ".",
                 "--find-links",
@@ -1205,7 +1298,6 @@ mod tests {
         let args = crate::editable_install_args(
             true,
             Some(OsString::from("/tmp/mohaus-wheelhouse")),
-            None,
             None,
             &passthrough,
         );

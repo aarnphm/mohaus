@@ -1,5 +1,8 @@
 [build-system]
-requires = ["mohaus>=0.1,<0.2", "mojo=={{mojo_version}}"]
+requires = [
+  "mohaus>=0.1,<0.2",
+  "modular",
+]
 build-backend = "mohaus.backend"
 
 [project]
@@ -39,11 +42,3 @@ exclude = ["tests/**"]
 
 [tool.ty.rules]
 all = "error"
-
-[tool.uv.sources]
-mojo = { index = "modular-nightly" }
-
-[[tool.uv.index]]
-name = "modular-nightly"
-url = "https://whl.modular.com/nightly/simple/"
-explicit = true

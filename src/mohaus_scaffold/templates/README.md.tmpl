@@ -14,3 +14,9 @@ Without Nix:
 uv pip install -e .
 python -c "import {{import_name}}; print({{import_name}}.passthrough('hello'))"
 ```
+
+Nightly Modular wheels:
+
+```bash
+uv pip install -e . --prerelease allow --extra-index-url https://whl.modular.com/nightly/simple/
+```

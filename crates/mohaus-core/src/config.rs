@@ -238,7 +238,8 @@ pub struct ProjectConfig {
 }
 
 impl ProjectConfig {
-    /// Load `pyproject.toml` and `.mojo-version` from a project directory.
+    /// Load `pyproject.toml` and an optional `.mojo-version` from a project
+    /// directory.
     ///
     /// # Errors
     ///
@@ -281,16 +282,15 @@ impl ProjectConfig {
 
         let mojo_version_path = project_dir.join(".mojo-version");
         let mojo_version = match fs::read_to_string(&mojo_version_path) {
-            Ok(text) => Some(MojoVersion::parse(text.trim())?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && pure => None,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(MohausError::InvalidProject {
-                    message: format!(
-                        ".mojo-version is required at {} but is missing; pin a Mojo toolchain with `echo <version> > .mojo-version` or set `[tool.mohaus] pure = true`",
-                        mojo_version_path.display()
-                    ),
-                });
+            Ok(text) => {
+                let value = text.trim();
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(MojoVersion::parse(value)?)
+                }
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(source) => {
                 return Err(MohausError::ReadFile {
                     path: mojo_version_path,
@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_mojo_version_file_is_an_actionable_error() {
+    fn missing_mojo_version_file_leaves_toolchain_unpinned() {
         let root = TempDir::new().unwrap();
         write_pyproject(
             root.path(),
@@ -778,16 +778,30 @@ version = "0.1.0"
 module-name = "demo._native"
 "#,
         );
-        let error = ProjectConfig::load(root.path()).unwrap_err();
-        match error {
-            MohausError::InvalidProject { message } => {
-                assert!(
-                    message.contains(".mojo-version is required"),
-                    "unexpected error message: {message}"
-                );
-            }
-            other => panic!("expected InvalidProject, got {other:?}"),
-        }
+        let config = ProjectConfig::load(root.path()).unwrap();
+
+        assert!(config.mojo_version.is_none());
+        assert_eq!(config.modules.len(), 1);
+    }
+
+    #[test]
+    fn empty_mojo_version_file_leaves_toolchain_unpinned() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(".mojo-version"), "  \n").unwrap();
+        write_pyproject(
+            root.path(),
+            r#"
+[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.mohaus]
+module-name = "demo._native"
+"#,
+        );
+        let config = ProjectConfig::load(root.path()).unwrap();
+
+        assert!(config.mojo_version.is_none());
     }
 
     #[test]

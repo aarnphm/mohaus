@@ -22,6 +22,3 @@ pub use editable::{ensure_editable_built, ensure_editable_built_with_verbosity};
 pub use error::{MohausError, Result};
 pub use log::{VERBOSITY_ENV, Verbosity};
 pub use python_info::PythonInfo;
-
-/// Mojo package version used by generated v1 projects.
-pub const DEFAULT_MOJO_VERSION: &str = "1.0.0b2.dev2026050805";

@@ -71,8 +71,8 @@ pub fn metadata_text(config: &ProjectConfig, editable: bool) -> String {
     }
     if editable {
         text.push_str("Requires-Dist: mohaus>=0.1,<0.2\n");
-        if let Some(version) = editable_mojo_pin(config) {
-            text.push_str(&format!("Requires-Dist: mojo=={version}\n"));
+        if !config.modules.is_empty() {
+            text.push_str("Requires-Dist: modular\n");
         }
     }
     if let Some(readme) = metadata.readme.as_ref() {
@@ -112,14 +112,6 @@ fn folded_keywords(keywords: &[String]) -> Vec<String> {
         return Vec::new();
     }
     vec![keywords.join(",")]
-}
-
-fn editable_mojo_pin(config: &ProjectConfig) -> Option<&str> {
-    let version = config.mojo_version.as_ref()?.as_str();
-    if version.contains("dev") || version.contains("nightly") {
-        return None;
-    }
-    Some(version)
 }
 
 /// Write WHEEL content.
@@ -599,7 +591,7 @@ pub fn file_hash(path: &Path) -> Result<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::{MojoVersion, PackageName};
+    use crate::config::{ModuleName, MojoModule, MojoVersion, PackageName};
     use crate::wheel::metadata_text;
 
     fn config_with_mojo(version: &str) -> crate::config::ProjectConfig {
@@ -611,7 +603,10 @@ mod tests {
             mojo_version: Some(MojoVersion::parse(version).unwrap()),
             mojo_src: PathBuf::from("src"),
             python_src: PathBuf::from("python"),
-            modules: Vec::new(),
+            modules: vec![MojoModule {
+                name: ModuleName::parse("demo._native").unwrap(),
+                entry: PathBuf::from("src/lib.mojo"),
+            }],
             strip: true,
             generate_stub: true,
             mojo_flags: Vec::new(),
@@ -696,18 +691,20 @@ mod tests {
     }
 
     #[test]
-    fn editable_metadata_requires_stable_mojo_package() {
+    fn editable_metadata_uses_modular_suite_without_stable_mojo_pin() {
         let metadata = metadata_text(&config_with_mojo("0.26.2.0"), true);
 
         assert!(metadata.contains("Requires-Dist: mohaus>=0.1,<0.2\n"));
-        assert!(metadata.contains("Requires-Dist: mojo==0.26.2.0\n"));
+        assert!(metadata.contains("Requires-Dist: modular\n"));
+        assert!(!metadata.contains("Requires-Dist: mojo=="));
     }
 
     #[test]
-    fn editable_metadata_does_not_require_dev_mojo_package() {
-        let metadata = metadata_text(&config_with_mojo("1.0.0.dev0"), true);
+    fn editable_metadata_uses_modular_suite_for_nightly_wheels() {
+        let metadata = metadata_text(&config_with_mojo("1.0.0b2.dev2026050805"), true);
 
         assert!(metadata.contains("Requires-Dist: mohaus>=0.1,<0.2\n"));
+        assert!(metadata.contains("Requires-Dist: modular\n"));
         assert!(!metadata.contains("Requires-Dist: mojo=="));
     }
 
@@ -717,6 +714,7 @@ mod tests {
 
         assert!(!metadata.contains("Requires-Dist: mohaus"));
         assert!(!metadata.contains("Requires-Dist: mojo"));
+        assert!(!metadata.contains("Requires-Dist: modular"));
     }
 
     #[test]

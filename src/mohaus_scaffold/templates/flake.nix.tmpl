@@ -151,7 +151,7 @@
             stamp="$VIRTUAL_ENV/.mohaus-editable-stamp"
             if [ ! -f "$stamp" ] \
               || [ pyproject.toml -nt "$stamp" ] \
-              || [ .mojo-version -nt "$stamp" ] \
+              || { [ -f .mojo-version ] && [ .mojo-version -nt "$stamp" ]; } \
               || [ -n "$(find src python -type f -newer "$stamp" -print -quit 2>/dev/null)" ]; then
               mohaus develop
               touch "$stamp"

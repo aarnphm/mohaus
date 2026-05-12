@@ -12,16 +12,19 @@ my_project/
 ├── python/my_project/
 ├── flake.nix
 ├── pyproject.toml
-├── .mojo-version
 ├── .gitignore
 └── .gitattributes
 ```
 
-Generated projects currently pin nightly `mojo==1.0.0b2.dev2026050805` and add
-the Modular nightly uv index so isolated `uv build` can resolve the compiler.
-They also include a Nix flake with the `mohaus` CLI, Python 3.11, uv,
-formatter/check apps, flake-owned pre-commit hooks, and a `nix develop` shell
-that keeps the editable install warm.
+Generated projects depend on the `modular` suite for isolated builds instead of
+pinning the separate `mojo`, `mojo-compiler`, `mojo-compiler-mojo-libs`, and
+`mojo-lldb-libs` wheels. `.mojo-version` is optional: when present, mohaus
+verifies the selected compiler against it; when absent, mohaus uses the first
+reachable `mojo` from `$MOHAUS_MOJO`, `$PATH`, or `$MODULAR_HOME/bin/mojo`, which
+lets isolated builds fall through to the compiler supplied by the `modular`
+wheel. Generated projects also include a Nix flake with the `mohaus` CLI, Python
+3.11, uv, formatter/check apps, flake-owned pre-commit hooks, and a
+`nix develop` shell that keeps the editable install warm.
 When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
 wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
 first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,
@@ -48,9 +51,17 @@ include path set.
 
 ```bash
 mohaus init monpy ~/workspace/monpy
+# or pin the scaffold explicitly:
+mohaus init monpy ~/workspace/monpy --mojo-version 1.0.0b1
 cd ~/workspace/monpy
 uv pip install -e .
 python -c "import monpy; print(monpy.passthrough('hello'))"
+```
+
+Nightly Modular wheels work through installer passthrough:
+
+```bash
+uv pip install -e . --prerelease allow --extra-index-url https://whl.modular.com/nightly/simple/
 ```
 
 ## install from CI

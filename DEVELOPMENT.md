@@ -163,10 +163,15 @@ Adding dependencies:
 ```bash
 mohaus add httpx                         # uv add to [project.dependencies]
 mohaus add pytest --group dev            # uv add --group dev
-mohaus add 'mojo==1.0.0b2.dev2026050805' --build-system   # edit [build-system].requires
+mohaus add 'modular>=26.3' --build-system # edit [build-system].requires
 mohaus add --mojo vendor/some_pkg        # append to [tool.mohaus.mojo-include-paths] + tag vendor root
 mohaus add --mojo github:Mojo-Numerics-and-Algorithms-group/NuMojo  # clone into vendor/NuMojo + tag/include it
 mohaus add numpy -- --prerelease=allow   # forward trailing uv add args
+```
+
+Nightly Modular wheels stay an installer concern:
+```bash
+mohaus develop -- --prerelease allow --extra-index-url https://whl.modular.com/nightly/simple/
 ```
 
 `ProjectConfig` also auto-discovers immediate `vendor/*` directories that carry
