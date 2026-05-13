@@ -1,6 +1,6 @@
 //! PyO3 bridge for the mohaus PEP 517 backend.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mohaus_core::editable::{source_hash, tree_hash};
 use mohaus_core::{
@@ -76,16 +76,18 @@ fn build_editable(
 
 #[pyfunction]
 #[pyo3(signature = (config_settings=None))]
-fn get_requires_for_build_wheel(config_settings: Option<Py<PyAny>>) -> Vec<String> {
+fn get_requires_for_build_wheel(config_settings: Option<Py<PyAny>>) -> PyResult<Vec<String>> {
     let _ = config_settings;
-    Vec::new()
+    let project_dir = current_dir_py()?;
+    mojo_build_requirements(&project_dir).map_err(to_py_error)
 }
 
 #[pyfunction]
 #[pyo3(signature = (config_settings=None))]
-fn get_requires_for_build_editable(config_settings: Option<Py<PyAny>>) -> Vec<String> {
+fn get_requires_for_build_editable(config_settings: Option<Py<PyAny>>) -> PyResult<Vec<String>> {
     let _ = config_settings;
-    Vec::new()
+    let project_dir = current_dir_py()?;
+    mojo_build_requirements(&project_dir).map_err(to_py_error)
 }
 
 #[pyfunction]
@@ -242,7 +244,24 @@ fn current_dir_py() -> PyResult<PathBuf> {
     })
 }
 
-fn file_name_string(path: &std::path::Path) -> PyResult<String> {
+fn mojo_build_requirements(project_dir: &Path) -> mohaus_core::Result<Vec<String>> {
+    let config = ProjectConfig::load(project_dir)?;
+    if config.pure {
+        return Ok(Vec::new());
+    }
+    let Some(version) = config.mojo_version.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let version = version.as_str();
+    Ok(vec![
+        format!("mojo=={version}"),
+        format!("mojo-compiler=={version}"),
+        format!("mojo-compiler-mojo-libs=={version}"),
+        format!("mojo-lldb-libs=={version}"),
+    ])
+}
+
+fn file_name_string(path: &Path) -> PyResult<String> {
     let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
         return Err(PyRuntimeError::new_err(format!(
             "path has no valid file name: {}",
@@ -254,4 +273,59 @@ fn file_name_string(path: &std::path::Path) -> PyResult<String> {
 
 fn to_py_error(error: mohaus_core::MohausError) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use crate::mojo_build_requirements;
+
+    fn write_pyproject(root: &TempDir, tool_mohaus: &str) {
+        fs::write(
+            root.path().join("pyproject.toml"),
+            format!(
+                "[project]\n\
+                 name = \"demo\"\n\
+                 version = \"0.1.0\"\n\
+                 requires-python = \">=3.11\"\n\
+                 \n\
+                 [tool.mohaus]\n\
+                 {tool_mohaus}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pinned_mojo_version_becomes_build_requirements() {
+        let root = TempDir::new().unwrap();
+        write_pyproject(&root, "module-name = \"demo._native\"\n");
+        fs::write(root.path().join(".mojo-version"), "1.0.0b1").unwrap();
+
+        assert_eq!(
+            mojo_build_requirements(root.path()).unwrap(),
+            vec![
+                "mojo==1.0.0b1",
+                "mojo-compiler==1.0.0b1",
+                "mojo-compiler-mojo-libs==1.0.0b1",
+                "mojo-lldb-libs==1.0.0b1",
+            ]
+        );
+    }
+
+    #[test]
+    fn unpinned_or_pure_projects_add_no_mojo_build_requirements() {
+        let unpinned = TempDir::new().unwrap();
+        write_pyproject(&unpinned, "module-name = \"demo._native\"\n");
+        assert!(mojo_build_requirements(unpinned.path()).unwrap().is_empty());
+
+        let pure = TempDir::new().unwrap();
+        write_pyproject(&pure, "pure = true\n");
+        fs::write(pure.path().join(".mojo-version"), "1.0.0b1").unwrap();
+        assert!(mojo_build_requirements(pure.path()).unwrap().is_empty());
+    }
 }

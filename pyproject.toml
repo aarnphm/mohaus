@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "mohaus"
 version = "0.1.0"
 description = "Build backend and CLI for mixed Python and Mojo packages."
-readme = "README.md"
+readme = ".github/README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
