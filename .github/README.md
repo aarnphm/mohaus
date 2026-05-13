@@ -16,42 +16,6 @@ my_project/
 └── .gitattributes
 ```
 
-Generated projects depend on the `modular` suite for isolated builds instead of
-pinning the separate `mojo`, `mojo-compiler`, `mojo-compiler-mojo-libs`, and
-`mojo-lldb-libs` wheels. `.mojo-version` is optional: when present, mohaus
-verifies the selected compiler against it; when absent, mohaus uses the first
-reachable `mojo` from `$MOHAUS_MOJO`, the active Python environment's
-console-script wrapper, `$PATH`, or `$MODULAR_HOME/bin/mojo`. Wheel and editable
-builds also pass the active Python environment's
-`site-packages/modular/lib/mojo` through `-mojo-search-paths`, so Mojo packages
-installed in the build env resolve without leaking a local Modular checkout.
-Generated projects also include a Nix flake with the `mohaus` CLI, Python 3.11,
-uv, formatter/check apps, flake-owned pre-commit hooks, and a `nix develop`
-shell that keeps the editable install warm.
-When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
-wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
-first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,
-`$MODULAR_HOME/bin/mojo`, and `--no-build-isolation`.
-Compiled Mojo extension targets also get adjacent generated typed `.pyi` stubs
-during `mohaus develop`, editable rebuilds, and wheel builds. The stub writer
-uses the Mojo binding declarations plus referenced `def` headers, so
-`PythonObject` becomes `object` instead of `Any`, and simple `PythonObject(...)`
-wrappers are narrowed from their body expressions when the source makes the
-runtime shape clear. Set
-`[tool.mohaus] generate-stub = false` when you want to own those `.pyi` files
-manually under `python-src`.
-Use `-v`, `-vv`, or `-vvv` before or after a subcommand to print mohaus
-diagnostics and forward matching verbosity into uv/pip-backed installs.
-Use `mohaus develop -- <uv pip install args>` to pass installer controls
-through to the editable install, for example `--python .venv/bin/python`,
-`--refresh-package mohaus`, or `--reinstall-package <name>`.
-Use `mohaus add --mojo <path>` for local Mojo include roots, or
-`mohaus add --mojo github:owner/repo` to clone a git dependency into
-`vendor/<repo>` and append that checkout to `mojo-include-paths`. Vendored
-Mojo include roots are also tagged with `.mohaus-mojo-include`; any immediate
-`vendor/*` directory carrying that marker is automatically added to the loaded
-include path set.
-
 ```bash
 mohaus init monpy ~/workspace/monpy
 # or pin the scaffold explicitly:
@@ -69,19 +33,17 @@ uv pip install -e . --prerelease allow --extra-index-url https://whl.modular.com
 
 ## install from CI
 
-Every push to `main` publishes platform wheels and an sdist to a PEP 503
-"simple" index hosted on GitHub Pages. Install the latest commit:
+Every push to `main` publishes platform wheels and an sdist to a PEP 503 "simple" index hosted on GitHub Pages. Install the latest commit:
 
 ```bash
 uv pip install mohaus --index https://aarnphm.github.io/mohaus/simple/
 ```
 
-The default install ships the Rust pyo3 backend. Add the `[mojo]` extra to
-pull in `mohaus-mojo`, the sibling package containing pure-Mojo parity ports
-of `mohaus`'s build primitives (toolchain, hashing, scaffold, stubgen). When
-both packages are installed and a `mojo` toolchain is reachable, the dispatcher
-routes the stable parity primitives through the Mojo `.mojopkg` artifacts;
-stubgen still stays on the Rust runtime path while the parity port matures:
+The default install ships the Rust pyo3 backend.
+
+Add the `[mojo]` extra to pull in `mohaus-mojo`, the sibling package containing pure-Mojo parity ports of `mohaus`'s build primitives (toolchain, hashing, scaffold, stubgen).
+
+When both packages are installed and a `mojo` toolchain is reachable, the dispatcher routes the stable parity primitives through the Mojo `.mojopkg` artifacts.
 
 ```bash
 uv pip install 'mohaus[mojo]' --index https://aarnphm.github.io/mohaus/simple/
