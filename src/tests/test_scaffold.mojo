@@ -32,6 +32,15 @@ def test_scaffold_writes_expected_files() raises:
     assert_true(len(pyproject.split('"mojo-compiler==')) == 1)
     assert_true(len(pyproject.split('"mojo-compiler-mojo-libs==')) == 1)
     assert_true(len(pyproject.split('"mojo-lldb-libs==')) == 1)
+    assert_true(
+        len(
+            pyproject.split(
+                '[tool.uv]\nextra-index-url = [\n  "https://aarnphm.github.io/mohaus/simple",\n '
+                ' "https://whl.modular.com/nightly/simple/",\n]\nprerelease = "allow"'
+            )
+        )
+        > 1
+    )
     assert_true(len(pyproject.split('extend-include = ["*.ipynb"]')) > 1)
     assert_true(len(pyproject.split('[tool.ty.rules]\nall = "error"')) > 1)
     var flake = destination.joinpath("flake.nix").read_text()

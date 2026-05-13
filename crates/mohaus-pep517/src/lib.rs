@@ -6,7 +6,8 @@ use mohaus_core::editable::{source_hash, tree_hash};
 use mohaus_core::{
     BuildOptions, EditableOptions, MetadataOptions, ProjectConfig, PythonInfo, SdistOptions,
     Verbosity, build_editable_wheel, build_sdist as core_build_sdist,
-    build_wheel as core_build_wheel, ensure_editable_built_with_verbosity,
+    build_wheel as core_build_wheel, discover_mojo_executable_from_python_scripts,
+    discover_mojo_paths_from_python_roots, ensure_editable_built_with_verbosity,
     prepare_metadata_for_build_editable as core_prepare_editable_metadata,
     prepare_metadata_for_build_wheel as core_prepare_metadata,
 };
@@ -193,7 +194,46 @@ fn python_info(py: Python<'_>) -> PyResult<PythonInfo> {
     let version_info = sys.getattr("version_info")?;
     let major = version_info.getattr("major")?.extract::<u8>()?;
     let minor = version_info.getattr("minor")?.extract::<u8>()?;
-    PythonInfo::from_parts(ext_suffix, cache_tag, platform, major, minor).map_err(to_py_error)
+    let (mojo_executables, mojo_search_paths) = python_mojo_paths(&sysconfig, &sys)?;
+    PythonInfo::from_parts_with_mojo_paths(
+        ext_suffix,
+        cache_tag,
+        platform,
+        major,
+        minor,
+        mojo_executables,
+        mojo_search_paths,
+    )
+    .map_err(to_py_error)
+}
+
+fn python_mojo_paths(
+    sysconfig: &Bound<'_, PyModule>,
+    sys: &Bound<'_, PyModule>,
+) -> PyResult<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let mut roots = Vec::new();
+    let scripts = sysconfig
+        .call_method1("get_path", ("scripts",))?
+        .extract::<Option<String>>()?
+        .map(PathBuf::from);
+    let paths = sysconfig.call_method0("get_paths")?;
+    for key in ["purelib", "platlib"] {
+        if let Ok(Some(path)) = paths
+            .get_item(key)
+            .and_then(|value| value.extract::<Option<String>>())
+        {
+            roots.push(PathBuf::from(path));
+        }
+    }
+    for path in sys.getattr("path")?.extract::<Vec<String>>()? {
+        if !path.is_empty() {
+            roots.push(PathBuf::from(path));
+        }
+    }
+    let (mut executables, search_paths) = discover_mojo_paths_from_python_roots(roots);
+    let mut script_executables = discover_mojo_executable_from_python_scripts(scripts);
+    script_executables.append(&mut executables);
+    Ok((script_executables, search_paths))
 }
 
 fn current_dir_py() -> PyResult<PathBuf> {

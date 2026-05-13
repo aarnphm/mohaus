@@ -184,6 +184,9 @@ mod tests {
         assert!(!pyproject.contains("\"mojo-lldb-libs=="));
         assert!(!pyproject.contains("mojo-src = \"src\""));
         assert!(!pyproject.contains("python-src = \"python\""));
+        assert!(pyproject.contains(
+            "[tool.uv]\nextra-index-url = [\n  \"https://aarnphm.github.io/mohaus/simple\",\n  \"https://whl.modular.com/nightly/simple/\",\n]\nprerelease = \"allow\""
+        ));
         assert!(pyproject.contains("extend-include = [\"*.ipynb\"]"));
         assert!(pyproject.contains("[tool.ty.rules]\nall = \"error\""));
         let flake = fs::read_to_string(destination.join("flake.nix")).unwrap();
@@ -220,6 +223,9 @@ mod tests {
         let pyproject = fs::read_to_string(destination.join("pyproject.toml")).unwrap();
         assert!(pyproject.contains("\"modular\","));
         assert!(!pyproject.contains("1.0.0b2.dev2026050805"));
+        assert!(pyproject.contains(
+            "[tool.uv]\nextra-index-url = [\n  \"https://aarnphm.github.io/mohaus/simple\",\n  \"https://whl.modular.com/nightly/simple/\",\n]\nprerelease = \"allow\""
+        ));
     }
 
     #[test]

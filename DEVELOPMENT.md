@@ -189,6 +189,12 @@ mohaus develop -- --prerelease allow --extra-index-url https://whl.modular.com/n
 `mojo-include-paths`. The marker keeps random vendored files out of `-I` while
 letting git-backed Mojo dependencies survive a clean pyproject load.
 
+PEP 517 hooks and `mohaus develop` also inspect the active Python environment.
+If that environment has a `mojo` console-script wrapper, it is tried before
+ordinary `$PATH` candidates. If `site-packages/modular/lib/mojo` exists, build
+argv gets `-mojo-search-paths <that-dir>` so packaged `.mojopkg` imports are
+resolved from the same build environment as the backend.
+
 Lint + format:
 
 ```bash

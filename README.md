@@ -20,11 +20,14 @@ Generated projects depend on the `modular` suite for isolated builds instead of
 pinning the separate `mojo`, `mojo-compiler`, `mojo-compiler-mojo-libs`, and
 `mojo-lldb-libs` wheels. `.mojo-version` is optional: when present, mohaus
 verifies the selected compiler against it; when absent, mohaus uses the first
-reachable `mojo` from `$MOHAUS_MOJO`, `$PATH`, or `$MODULAR_HOME/bin/mojo`, which
-lets isolated builds fall through to the compiler supplied by the `modular`
-wheel. Generated projects also include a Nix flake with the `mohaus` CLI, Python
-3.11, uv, formatter/check apps, flake-owned pre-commit hooks, and a
-`nix develop` shell that keeps the editable install warm.
+reachable `mojo` from `$MOHAUS_MOJO`, the active Python environment's
+console-script wrapper, `$PATH`, or `$MODULAR_HOME/bin/mojo`. Wheel and editable
+builds also pass the active Python environment's
+`site-packages/modular/lib/mojo` through `-mojo-search-paths`, so Mojo packages
+installed in the build env resolve without leaking a local Modular checkout.
+Generated projects also include a Nix flake with the `mohaus` CLI, Python 3.11,
+uv, formatter/check apps, flake-owned pre-commit hooks, and a `nix develop`
+shell that keeps the editable install warm.
 When `mohaus` is installed from a local wheel, `mohaus develop` forwards that
 wheelhouse to uv so isolated editable builds can resolve `mohaus` before the
 first public release. Local Modular checkouts can use `$MOHAUS_MOJO`, `$PATH`,

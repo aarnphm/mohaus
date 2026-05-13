@@ -8,6 +8,7 @@ use std::process::Command;
 use crate::config::{MojoVersion, normalize_mojo_version_token};
 use crate::error::{MohausError, Result};
 use crate::log::{Verbosity, debug};
+use crate::python_info::PythonInfo;
 
 /// Resolved Mojo executable and version output.
 #[derive(Clone, Debug)]
@@ -64,14 +65,34 @@ pub fn resolve_project_mojo_with_verbosity(
     expected: Option<&MojoVersion>,
     verbosity: Verbosity,
 ) -> Result<MojoToolchain> {
+    resolve_project_mojo_for_python_with_verbosity(expected, None, verbosity)
+}
+
+/// Resolve the Mojo toolchain, preferring the compiler shipped in the active
+/// Python environment before falling back to PATH and MODULAR_HOME.
+///
+/// # Errors
+///
+/// Returns an error when Mojo cannot be found, `mojo --version` fails, or the
+/// discovered version does not match the configured project pin.
+pub fn resolve_project_mojo_for_python_with_verbosity(
+    expected: Option<&MojoVersion>,
+    python: Option<&PythonInfo>,
+    verbosity: Verbosity,
+) -> Result<MojoToolchain> {
     match expected {
-        Some(expected) => resolve_verified_mojo_with_verbosity(expected, verbosity),
-        None => resolve_unpinned_mojo_with_verbosity(verbosity),
+        Some(expected) => {
+            resolve_verified_mojo_for_python_with_verbosity(expected, python, verbosity)
+        }
+        None => resolve_unpinned_mojo_for_python_with_verbosity(python, verbosity),
     }
 }
 
-fn resolve_unpinned_mojo_with_verbosity(verbosity: Verbosity) -> Result<MojoToolchain> {
-    let executable = resolve_mojo_executable_with_verbosity(verbosity)?;
+fn resolve_unpinned_mojo_for_python_with_verbosity(
+    python: Option<&PythonInfo>,
+    verbosity: Verbosity,
+) -> Result<MojoToolchain> {
+    let executable = resolve_mojo_executable_for_python_with_verbosity(python, verbosity)?;
     let version_output = probe_mojo_version_with_verbosity(&executable, verbosity)?;
     debug(verbosity, 1, || {
         format!(
@@ -103,8 +124,15 @@ pub fn resolve_mojo_executable() -> Result<PathBuf> {
 /// Returns an error when no executable is found through `$MOHAUS_MOJO`, `$PATH`,
 /// or `$MODULAR_HOME/bin/mojo`.
 pub fn resolve_mojo_executable_with_verbosity(verbosity: Verbosity) -> Result<PathBuf> {
+    resolve_mojo_executable_for_python_with_verbosity(None, verbosity)
+}
+
+fn resolve_mojo_executable_for_python_with_verbosity(
+    python: Option<&PythonInfo>,
+    verbosity: Verbosity,
+) -> Result<PathBuf> {
     debug(verbosity, 1, || "resolving Mojo executable".to_string());
-    mojo_candidates()
+    mojo_candidates_for_python(python)
         .into_iter()
         .inspect(|candidate| {
             debug(verbosity, 1, || {
@@ -139,15 +167,42 @@ fn mojo_override_candidate() -> Option<PathBuf> {
     path.is_file().then(|| normalize_mojo_candidate(path))
 }
 
-fn mojo_candidates() -> Vec<PathBuf> {
+fn mojo_candidates_for_python(python: Option<&PythonInfo>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(candidate) = mojo_override_candidate() {
         push_unique_candidate(&mut candidates, candidate);
+    }
+    if let Some(python) = python {
+        for candidate in &python.mojo_executables {
+            push_unique_candidate(&mut candidates, normalize_mojo_candidate(candidate.clone()));
+        }
     }
     for candidate in path_and_modular_home_candidates() {
         push_unique_candidate(&mut candidates, candidate);
     }
     candidates
+}
+
+fn resolve_verified_mojo_for_python_with_verbosity(
+    expected: &MojoVersion,
+    python: Option<&PythonInfo>,
+    verbosity: Verbosity,
+) -> Result<MojoToolchain> {
+    let expected = expected.normalized();
+    debug(verbosity, 1, || {
+        format!("resolving Mojo executable for version {expected}")
+    });
+    if let Some(executable) = mojo_override_candidate() {
+        debug(verbosity, 1, || {
+            format!("using $MOHAUS_MOJO candidate {}", executable.display())
+        });
+        return verify_mojo_candidate_with_verbosity(executable, &expected, verbosity);
+    }
+    let candidates = mojo_candidates_for_python(python);
+    debug(verbosity, 2, || {
+        format!("found Mojo candidates: {}", format_paths(&candidates))
+    });
+    resolve_verified_mojo_from_candidates_with_verbosity(expected, candidates, verbosity)
 }
 
 fn path_and_modular_home_candidates() -> Vec<PathBuf> {
@@ -411,6 +466,7 @@ mod tests {
 
     use crate::config::{MojoVersion, normalize_mojo_version_token};
     use crate::error::MohausError;
+    use crate::python_info::PythonInfo;
 
     #[test]
     fn normalizes_cli_version() {
@@ -470,6 +526,36 @@ mod tests {
             }
             other => panic!("expected version mismatch, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn python_environment_mojo_candidate_precedes_path_candidates() {
+        if std::env::var_os("MOHAUS_MOJO").is_some() {
+            return;
+        }
+        let root = TempDir::new().unwrap();
+        let python_mojo = root.path().join("site-packages/modular/bin/mojo");
+        let path_mojo = root.path().join("bin/mojo");
+        write_fake_mojo(&python_mojo, "Mojo 1.0.0b1 (abc123)");
+        write_fake_mojo(&path_mojo, "Mojo 1.0.0b1 (abc123)");
+        let python = PythonInfo::from_parts_with_mojo_paths(
+            ".cpython-311-darwin.so".to_string(),
+            "cpython-311".to_string(),
+            "macosx-14.0-arm64".to_string(),
+            3,
+            11,
+            vec![python_mojo.clone()],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let candidates = super::mojo_candidates_for_python(Some(&python));
+
+        assert_eq!(
+            candidates.first(),
+            Some(&fs::canonicalize(python_mojo).unwrap())
+        );
     }
 
     #[cfg(unix)]

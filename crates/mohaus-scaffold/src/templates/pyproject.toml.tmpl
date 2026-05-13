@@ -19,6 +19,13 @@ classifiers = [
   "Topic :: Software Development :: Build Tools",
 ]
 
+[tool.uv]
+extra-index-url = [
+  "https://aarnphm.github.io/mohaus/simple",
+  "https://whl.modular.com/nightly/simple/",
+]
+prerelease = "allow"
+
 [tool.mohaus]
 module-name = "{{import_name}}._native"
 strip = true

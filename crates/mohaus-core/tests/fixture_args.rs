@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mohaus_core::config::ProjectConfig;
-use mohaus_core::editable::build_mojo_args;
+use mohaus_core::editable::{build_mojo_args, build_mojo_args_with_search_paths};
 use mohaus_core::stub::module_stub_plan_for_extension;
 
 fn workspace_root() -> PathBuf {
@@ -69,6 +69,39 @@ fn editable_build_argv_carries_include_paths() {
         found_include,
         "expected -I {} in argv, got {:?}",
         expected_include.display(),
+        args
+    );
+}
+
+#[test]
+fn build_argv_carries_python_mojo_search_paths() {
+    let root = tempfile::TempDir::new().unwrap();
+    copy_fixture("with_include_paths", root.path());
+
+    let config = ProjectConfig::load(root.path()).unwrap();
+    let module = &config.modules[0];
+    let output = root
+        .path()
+        .join("python")
+        .join("include_demo")
+        .join("_native.so");
+    let search = root
+        .path()
+        .join(".venv/lib/python3.11/site-packages/modular/lib/mojo");
+    let args = build_mojo_args_with_search_paths(
+        &config,
+        module,
+        &output,
+        None,
+        std::slice::from_ref(&search),
+    );
+
+    let flag: OsString = OsString::from("-mojo-search-paths");
+    assert!(
+        args.windows(2)
+            .any(|window| window[0] == flag && window[1] == search.as_os_str()),
+        "expected -mojo-search-paths {} in argv, got {:?}",
+        search.display(),
         args
     );
 }

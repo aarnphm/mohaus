@@ -21,4 +21,6 @@ pub use config::{ModuleName, MojoVersion, PackageName, ProjectConfig};
 pub use editable::{ensure_editable_built, ensure_editable_built_with_verbosity};
 pub use error::{MohausError, Result};
 pub use log::{VERBOSITY_ENV, Verbosity};
-pub use python_info::PythonInfo;
+pub use python_info::{
+    PythonInfo, discover_mojo_executable_from_python_scripts, discover_mojo_paths_from_python_roots,
+};

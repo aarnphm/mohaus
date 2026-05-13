@@ -8,7 +8,7 @@ use crate::error::{MohausError, Result};
 use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
 use crate::sdist::write_sdist_archive;
-use crate::toolchain::resolve_project_mojo_with_verbosity;
+use crate::toolchain::resolve_project_mojo_for_python_with_verbosity;
 use crate::wheel::{
     copy_dir, copy_prepared_dist_info, write_dist_info, write_file, write_wheel_archive,
 };
@@ -88,7 +88,7 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
 
     stage_python_tree(&config, staged.path())?;
     if !config.modules.is_empty() {
-        let mojo = resolve_module_toolchain(&config, options.verbosity)?;
+        let mojo = resolve_module_toolchain(&config, &options.python, options.verbosity)?;
         for module in &config.modules {
             let output =
                 extension_output_path_in_root(staged.path(), module, &options.python.ext_suffix);
@@ -99,7 +99,14 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
                     output.display()
                 )
             });
-            compile_module_with_verbosity(&config, module, &output, &mojo, options.verbosity)?;
+            compile_module_with_verbosity(
+                &config,
+                module,
+                &output,
+                &mojo,
+                &options.python.mojo_search_paths,
+                options.verbosity,
+            )?;
         }
     }
 
@@ -130,8 +137,17 @@ pub fn build_wheel(options: &BuildOptions) -> Result<PathBuf> {
     Ok(wheel_path)
 }
 
-fn resolve_module_toolchain(config: &ProjectConfig, verbosity: Verbosity) -> Result<PathBuf> {
-    Ok(resolve_project_mojo_with_verbosity(config.mojo_version.as_ref(), verbosity)?.executable)
+fn resolve_module_toolchain(
+    config: &ProjectConfig,
+    python: &PythonInfo,
+    verbosity: Verbosity,
+) -> Result<PathBuf> {
+    Ok(resolve_project_mojo_for_python_with_verbosity(
+        config.mojo_version.as_ref(),
+        Some(python),
+        verbosity,
+    )?
+    .executable)
 }
 
 /// Build a PEP 660 editable wheel.

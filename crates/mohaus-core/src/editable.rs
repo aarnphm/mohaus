@@ -12,7 +12,7 @@ use crate::log::{Verbosity, debug};
 use crate::python_info::PythonInfo;
 use crate::stub::{ModuleStub, module_stub_plan_for_extension};
 use crate::toolchain::{
-    resolve_project_mojo_with_verbosity, run_command_with_env_remove_with_verbosity,
+    resolve_project_mojo_for_python_with_verbosity, run_command_with_env_remove_with_verbosity,
 };
 use crate::wheel::write_file;
 
@@ -119,8 +119,9 @@ pub fn ensure_editable_built_with_verbosity(
         return Ok(());
     }
     let mojo = if plan.iter().any(|stale| stale.needs_compile) {
-        Some(resolve_project_mojo_with_verbosity(
+        Some(resolve_project_mojo_for_python_with_verbosity(
             config.mojo_version.as_ref(),
+            Some(python),
             verbosity,
         )?)
     } else {
@@ -147,6 +148,7 @@ pub fn ensure_editable_built_with_verbosity(
                 &stale.module,
                 &stale.extension_path,
                 &mojo.executable,
+                &python.mojo_search_paths,
                 verbosity,
             )?;
             write_file(&stale.hash_path, stale.expected_hash.as_bytes())?;
@@ -176,7 +178,7 @@ struct StaleModule {
 fn plan_rebuilds(config: &ProjectConfig, python: &PythonInfo) -> Result<Vec<StaleModule>> {
     let mut stale = Vec::new();
     for module in &config.modules {
-        let hash = source_hash(config, module)?;
+        let hash = source_hash_with_mojo_search_paths(config, module, &python.mojo_search_paths)?;
         let hash_path = editable_hash_path(config, module);
         let extension_path = extension_output_path(config, module, &python.ext_suffix);
         let stub = if config.generate_stub {
@@ -272,6 +274,7 @@ pub fn compile_module(
         module,
         output,
         mojo_executable,
+        &[],
         Verbosity::default(),
     )
 }
@@ -287,6 +290,7 @@ pub fn compile_module_with_verbosity(
     module: &MojoModule,
     output: &Path,
     mojo_executable: &Path,
+    mojo_search_paths: &[PathBuf],
     verbosity: Verbosity,
 ) -> Result<()> {
     if let Some(parent) = output.parent() {
@@ -296,7 +300,13 @@ pub fn compile_module_with_verbosity(
         })?;
     }
     let runtime = discover_mojo_runtime_libs_with_verbosity(mojo_executable, verbosity)?;
-    let args = build_mojo_args(config, module, output, runtime.as_ref());
+    let args = build_mojo_args_with_search_paths(
+        config,
+        module,
+        output,
+        runtime.as_ref(),
+        mojo_search_paths,
+    );
     let env_remove = if runtime.is_some() {
         PYTHON_PACKAGE_MOJO_ENV_REMOVE
     } else {
@@ -323,6 +333,18 @@ pub fn build_mojo_args(
     output: &Path,
     runtime: Option<&MojoRuntimeLibs>,
 ) -> Vec<OsString> {
+    build_mojo_args_with_search_paths(config, module, output, runtime, &[])
+}
+
+/// Build the argv passed to `mojo`, including build-environment Mojo package
+/// search roots discovered from Python.
+pub fn build_mojo_args_with_search_paths(
+    config: &ProjectConfig,
+    module: &MojoModule,
+    output: &Path,
+    runtime: Option<&MojoRuntimeLibs>,
+    mojo_search_paths: &[PathBuf],
+) -> Vec<OsString> {
     let entry = config.project_dir.join(&module.entry);
     let mut args = vec![
         OsString::from("build"),
@@ -334,6 +356,10 @@ pub fn build_mojo_args(
     ];
     if let Some(runtime) = runtime {
         add_mojo_runtime_link_args(&mut args, runtime);
+    }
+    for search_path in mojo_search_paths {
+        args.push(OsString::from("-mojo-search-paths"));
+        args.push(search_path.as_os_str().to_os_string());
     }
     for include in &config.mojo_include_paths {
         args.push(OsString::from("-I"));
@@ -516,6 +542,14 @@ pub fn tree_hash(root: &Path) -> Result<String> {
 ///
 /// Returns an error when source or include-path files cannot be walked or read.
 pub fn source_hash(config: &ProjectConfig, module: &MojoModule) -> Result<String> {
+    source_hash_with_mojo_search_paths(config, module, &[])
+}
+
+fn source_hash_with_mojo_search_paths(
+    config: &ProjectConfig,
+    module: &MojoModule,
+    mojo_search_paths: &[PathBuf],
+) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(module.name.as_str().as_bytes());
     hasher.update(module.entry.to_string_lossy().as_bytes());
@@ -527,6 +561,14 @@ pub fn source_hash(config: &ProjectConfig, module: &MojoModule) -> Result<String
     for flag in &config.mojo_flags {
         hasher.update(flag.as_bytes());
         hasher.update(b"\0");
+    }
+    for path in mojo_search_paths {
+        hasher.update(b"mojo-search-path\0");
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        if path.is_dir() {
+            hash_tree(path, &mut hasher)?;
+        }
     }
     hash_tree(&config.mojo_source_root(), &mut hasher)?;
     for include in &config.mojo_include_paths {
@@ -856,6 +898,7 @@ def passthrough(value: PythonObject) raises -> PythonObject:
             &config.modules[0],
             &output,
             &mojo,
+            &[],
             Verbosity::default(),
         )
         .unwrap();
@@ -919,6 +962,7 @@ def passthrough(value: PythonObject) raises -> PythonObject:
             &config.modules[0],
             &output,
             &mojo,
+            &[],
             Verbosity::default(),
         )
         .unwrap();
