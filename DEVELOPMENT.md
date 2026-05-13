@@ -46,6 +46,7 @@ mohaus/
 ```
 
 The three toolchains:
+
 - **Rust** owns the build orchestration, CLI, PEP 517/660 backend, and the
   pyo3 cdylib. Built by `cargo` for tests and by `maturin` for wheels.
 - **Python** owns the `mohaus` runtime shim, the dispatcher between Rust and
@@ -64,6 +65,7 @@ nix develop
 That gives you the pinned Rust 1.93.0 toolchain, maturin, uv, Python 3.11,
 ruff, alejandra, deadnix, statix, and ratchet, plus pre-commit hooks
 generated from the flake. Entering the dev shell:
+
 - creates `.venv/` and installs `mohaus` editable via maturin (with dev
   extras) so `mohaus`, `pytest`, and the local backend are immediately
   runnable;
@@ -111,6 +113,7 @@ is stale. Projects that keep hand-authored `.pyi` files can set
 leaving stub files entirely to `python-src`.
 
 Testing convention:
+
 - Crate-local unit tests live next to the code (`#[cfg(test)] mod tests`).
 - Cross-crate integration tests live under `crates/mohaus-core/tests/` —
   see `fixture_args.rs` and `pure_wheel.rs`.
@@ -130,11 +133,13 @@ mohaus-mojo = { workspace = true }
 ```
 
 Two members:
+
 - **`mohaus`** — the root project, built by maturin.
 - **`mohaus-mojo`** — `python/mohaus_mojo/pyproject.toml`, built by mohaus
   itself in pure mode.
 
 The default install is Rust-only:
+
 ```bash
 uv pip install -e .
 ```
@@ -142,12 +147,14 @@ uv pip install -e .
 `mohaus develop` prefers `uv pip install` and accepts installer passthrough
 after `--`, which is useful when a workflow must target a specific venv or
 force a cache refresh:
+
 ```bash
 mohaus develop -- --python .venv/bin/python --refresh-package mohaus
 ```
 
 Adding the optional `mojo` extra pulls in the workspace's mohaus-mojo
 sibling, which ships the compiled `.mojopkg` parity ports:
+
 ```bash
 uv pip install -e '.[mojo]'
 ```
@@ -155,11 +162,13 @@ uv pip install -e '.[mojo]'
 The runtime switch lives at `python/mohaus/_dispatch.py`. It returns
 `"mojo"` when both `mohaus_mojo` is importable AND a `mojo` toolchain is
 reachable; otherwise `"rust"`. Override at runtime with:
+
 ```bash
 MOHAUS_DISABLE_MOJO_PARITY=1 python -c "import mohaus._dispatch as d; print(d.active_backend_name())"
 ```
 
 Adding dependencies:
+
 ```bash
 mohaus add httpx                         # uv add to [project.dependencies]
 mohaus add pytest --group dev            # uv add --group dev
@@ -170,6 +179,7 @@ mohaus add numpy -- --prerelease=allow   # forward trailing uv add args
 ```
 
 Nightly Modular wheels stay an installer concern:
+
 ```bash
 mohaus develop -- --prerelease allow --extra-index-url https://whl.modular.com/nightly/simple/
 ```
@@ -180,6 +190,7 @@ mohaus develop -- --prerelease allow --extra-index-url https://whl.modular.com/n
 letting git-backed Mojo dependencies survive a clean pyproject load.
 
 Lint + format:
+
 ```bash
 uvx ruff format --config "indent-width=2" --config "line-length=119" --config "preview=true" --check python tests scripts
 uvx ruff check python tests scripts
@@ -189,9 +200,10 @@ uvx ruff check python tests scripts
 
 Mojo source lives under `src/`. The layout intentionally mirrors what
 `mohaus init` generates for downstream users — mohaus's parity ports
-*are* a real mohaus project, modulo the workspace context.
+_are_ a real mohaus project, modulo the workspace context.
 
 Each parity package is one directory:
+
 - `src/mohaus_toolchain/` — Mojo equivalent of `mohaus_core::toolchain`.
 - `src/mohaus_hashing/` — pure-Mojo SHA256 + walker (mirrors
   `mohaus_core::editable::source_hash`).
@@ -226,6 +238,7 @@ CPython interop.
 Each Mojo port mirrors the public API of its Rust counterpart. The
 contract is byte-equality on outputs. CI's `mojo-parity` job runs
 `tests/parity/run_source_hash_parity.py` after compiling the .mojopkgs:
+
 - Rust path: `mohaus.mohaus_pep517.tree_hash_for_dir` (exposed via pyo3).
 - Mojo path: `mojo run -I src tests/parity/_mojo_hash_runner.mojo <fixture>`.
 
@@ -242,6 +255,7 @@ Both directories are CI-staged build artifacts under
 are gitignored.
 
 The flow:
+
 1. `mojo package` produces `.mojopkg` files under `target/mojopkg/`.
 2. `scripts/stage_mohaus_mojo_assets.py` copies those `.mojopkg`s plus the
    canonical scaffold templates into `python/mohaus_mojo/`.
@@ -249,6 +263,7 @@ The flow:
    `py3-none-any` wheel via mohaus's pure-mode backend.
 
 Locally, after editing a Mojo parity port:
+
 ```bash
 mojo package src/mohaus_toolchain -o target/mojopkg/mohaus_toolchain.mojopkg
 mojo package src/mohaus_hashing  -o target/mojopkg/mohaus_hashing.mojopkg
@@ -329,9 +344,11 @@ empty or 404:
   `https://aarnphm.github.io/mohaus/simple/` (with the slash, not without).
 
 While Pages is being set up, the artifacts are still reachable via:
+
 ```bash
 gh run download <run-id>
 ```
+
 which works for any workflow run regardless of Pages state.
 
 ## ratchet workflow
@@ -346,6 +363,7 @@ ratchet update .github/workflows/ci.yml   # equivalent without nix
 
 Pre-commit also runs `ratchet lint` on every workflow change. To bump pins
 across the workflow:
+
 1. `ratchet update .github/workflows/ci.yml`
 2. Inspect the diff; SHAs should still resolve to known-good tags.
 3. Commit. The `ratchet` CI job validates the result on push.
@@ -365,26 +383,20 @@ We never store a PyPI token in CI secrets.
 
 ## quick command reference
 
-| task | command |
-| --- | --- |
-| Enter dev shell | `nix develop` |
-| Format Rust | `cargo fmt` |
-| Rust lint | `nix run .#clippy` |
-| Rust tests | `nix run .#test` |
-| Format Python | `uvx ruff format ... python tests scripts` |
-| Python lint | `uvx ruff check python tests scripts` |
-| Python tests | `pytest tests/python` |
-| Mojo unit tests | `mojo run -I src src/tests/test_*.mojo` |
-| Mojo parity diff | `python tests/parity/run_source_hash_parity.py` |
-| All hygiene checks | `nix run .#check` |
-| Ratchet pins | `nix run .#ratchet-lint` / `nix run .#ratchet-update` |
-| Build mohaus wheel | `maturin build --release --out dist` |
-| Build mohaus-mojo wheel | see "packaging the mojo parity ports" |
-| Add Python dep | `mohaus add <spec>` |
-| Add Mojo dep | `mohaus add --mojo <path>` or `mohaus add --mojo github:owner/repo` |
-
-## related plans
-
-- `.claude/plans/V1.md` — v1 product contract.
-- `.claude/plans/dogfood.md` — packaging cutover stages.
-- `.claude/plans/mojo-migration.md` — per-crate Mojo port priority.
+| task                    | command                                                             |
+| ----------------------- | ------------------------------------------------------------------- |
+| Enter dev shell         | `nix develop`                                                       |
+| Format Rust             | `cargo fmt`                                                         |
+| Rust lint               | `nix run .#clippy`                                                  |
+| Rust tests              | `nix run .#test`                                                    |
+| Format Python           | `uvx ruff format ... python tests scripts`                          |
+| Python lint             | `uvx ruff check python tests scripts`                               |
+| Python tests            | `pytest tests/python`                                               |
+| Mojo unit tests         | `mojo run -I src src/tests/test_*.mojo`                             |
+| Mojo parity diff        | `python tests/parity/run_source_hash_parity.py`                     |
+| All hygiene checks      | `nix run .#check`                                                   |
+| Ratchet pins            | `nix run .#ratchet-lint` / `nix run .#ratchet-update`               |
+| Build mohaus wheel      | `maturin build --release --out dist`                                |
+| Build mohaus-mojo wheel | see "packaging the mojo parity ports"                               |
+| Add Python dep          | `mohaus add <spec>`                                                 |
+| Add Mojo dep            | `mohaus add --mojo <path>` or `mohaus add --mojo github:owner/repo` |

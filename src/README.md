@@ -8,12 +8,12 @@ This directory follows the `src/` convention `mohaus init` generates for
 downstream projects. mohaus dogfooding itself relies on this layout looking
 exactly like the layout users get scaffolded.
 
-| package | rust source | stdlib coverage | notes |
-| --- | --- | --- | --- |
-| `mohaus_toolchain` | `crates/mohaus-core/src/toolchain.rs` | `subprocess`, `os.env`, `pathlib`, `os.path` | full native impl, no Python interop |
-| `mohaus_hashing` | `crates/mohaus-core/src/editable.rs` (`source_hash`) | `pathlib` for walking; **pure-Mojo SHA256** in `_sha256.mojo` (FIPS 180-4) | byte-equality contract with the Rust `sha2` crate; KAT vectors pinned in `tests/test_sha256_kat.mojo` |
-| `mohaus_scaffold` | `crates/mohaus-scaffold/src/lib.rs` | `pathlib`, file IO | templates copied byte-for-byte from `crates/mohaus-scaffold/src/templates/` |
-| `mohaus_stubgen` | `crates/mohaus-core/src/stub.rs` | string parsing only | source-level `.pyi` extractor parity; Rust remains the runtime stubgen path |
+| package            | rust source                                          | stdlib coverage                                                            | notes                                                                                                 |
+| ------------------ | ---------------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `mohaus_toolchain` | `crates/mohaus-core/src/toolchain.rs`                | `subprocess`, `os.env`, `pathlib`, `os.path`                               | full native impl, no Python interop                                                                   |
+| `mohaus_hashing`   | `crates/mohaus-core/src/editable.rs` (`source_hash`) | `pathlib` for walking; **pure-Mojo SHA256** in `_sha256.mojo` (FIPS 180-4) | byte-equality contract with the Rust `sha2` crate; KAT vectors pinned in `tests/test_sha256_kat.mojo` |
+| `mohaus_scaffold`  | `crates/mohaus-scaffold/src/lib.rs`                  | `pathlib`, file IO                                                         | templates copied byte-for-byte from `crates/mohaus-scaffold/src/templates/`                           |
+| `mohaus_stubgen`   | `crates/mohaus-core/src/stub.rs`                     | string parsing only                                                        | source-level `.pyi` extractor parity; Rust remains the runtime stubgen path                           |
 
 ## parity contract
 
@@ -44,7 +44,4 @@ files the Rust crate ships, and stubgen only parses binding source text.
 
 ## what's blocked
 
-`mohaus_config` (TOML parsing), `mohaus_wheel` (ZIP), and `mohaus_sdist`
-(tar.gz) need stdlib gaps to close before parity ports become useful. They
-are tracked in `.claude/plans/mojo-migration.md` and `.claude/plans/dogfood.md`.
-The watcher and CLI parser are deferred to Phase C per the migration plan.
+`mohaus_config` (TOML parsing), `mohaus_wheel` (ZIP), and `mohaus_sdist` (tar.gz), watcher and CLI parser

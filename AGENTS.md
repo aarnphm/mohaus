@@ -4,9 +4,7 @@ This is the canonical operating policy for this repository.
 
 ## priorities
 
-- Keep mohaus maturin-shaped: PEP 517/660 backend, Rust CLI, mixed `python/`
-  layout, editable installs, wheels, sdists, and uv-friendly publishing.
-- Treat `.claude/plans/V1.md` as the v1 product contract.
+- Keep mohaus maturin-shaped: PEP 517/660 backend, Rust CLI, mixed `python/` layout, editable installs, wheels, sdists, and uv-friendly publishing.
 - Prefer repo-native commands. Use `nix develop` for interactive work and
   `nix run .#check` for the full local hygiene pass before raw `cargo`, `ruff`,
   or ad hoc shell.
